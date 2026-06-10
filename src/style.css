@@ -14,6 +14,12 @@
   box-sizing: border-box;
 }
 
+/* Class rules below set display:flex/grid, which would otherwise beat the
+   [hidden] attribute's display:none (attribute selectors lose to classes). */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--bg);
