@@ -11,9 +11,11 @@ Reads a `.wanim` file recorded in [Warudo](https://warudo.app/) and exports an `
 ## How to use
 
 1. Drag a `.wanim` file onto the page (or click to select one).
-2. Watch the animated skeleton in the 3D preview; scrub or pause with the transport bar.
+2. Watch the animated skeleton in the 3D preview — including a stand-in head that plays back the recorded ARKit face blendshapes — and scrub or pause with the transport bar.
 3. Pick an export frame rate and click **Download FBX**.
 4. Import the FBX into Blender, Maya, MotionBuilder, etc.
+
+The preview face is for reference only; face data is not written to the FBX (see below).
 
 The FBX contains a 55-bone Unity humanoid skeleton (original bone names preserved) with per-bone rotation curves and root (hips) translation, in a single take. It is Y-up, in centimetres.
 
@@ -21,9 +23,9 @@ The FBX contains a 55-bone Unity humanoid skeleton (original bone names preserve
 
 Mesh, textures, blendshapes/morphs, spring bones, and props are not exported — `.wanim` records joint motion, not geometry.
 
-## Trademarks
+## Credits & trademarks
 
-Independent, unofficial tool. "Warudo" is a trademark of HakuyaLabs. Not affiliated with or endorsed by them.
+Independent, unofficial tool. "Warudo" is a trademark of HakuyaLabs. Not affiliated with or endorsed by them. The preview face model is the "facecap" head by [Face Cap](https://www.bannaflak.com/face-cap) (Bannaflak), distributed with three.js; textures are stripped and it is used for on-screen reference only.
 
 ## License
 

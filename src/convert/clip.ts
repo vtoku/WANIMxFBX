@@ -20,6 +20,36 @@ export interface ConvertedClip {
   localQuat: Quat[][];
   /** Per-bone bind translation (frame 0 local position). */
   bindPos: Vec3[];
+  /** Recorded face blendshapes (ARKit-style names) aligned to `times`, or null. */
+  face: FaceTracks | null;
+}
+
+export interface FaceTracks {
+  /** Blendshape names as recorded (e.g. "eyeBlinkLeft", "jawOpen"). */
+  names: string[];
+  /** tracks[nameIndex][frame] — blendshape weight 0..1, aligned to `times`. */
+  tracks: Float32Array[];
+}
+
+/** Pick the richest blendshape set and flatten it into per-name frame tracks. */
+function extractFace(
+  blendshapes: Record<string, Record<string, number>[]>,
+  frames: number,
+): FaceTracks | null {
+  const sets = Object.values(blendshapes);
+  if (sets.length === 0) return null;
+  // Prefer the set with the most channels (the ARKit set), else the first.
+  let best = sets[0];
+  for (const s of sets) if ((s[0] ? Object.keys(s[0]).length : 0) > (best[0] ? Object.keys(best[0]).length : 0)) best = s;
+  if (!best[0]) return null;
+
+  const names = Object.keys(best[0]);
+  const tracks = names.map(() => new Float32Array(frames));
+  for (let f = 0; f < frames; f++) {
+    const frame = best[f] ?? {};
+    for (let n = 0; n < names.length; n++) tracks[n][f] = frame[names[n]] ?? 0;
+  }
+  return { names, tracks };
 }
 
 // Unity (left-handed, +Z forward) → right-handed Y-up: negate Z.
@@ -76,6 +106,7 @@ export function convertCharacter(clip: WanimClip, characterIndex = 0): Converted
     localPos,
     localQuat,
     bindPos: localPos.map((track) => track[0]),
+    face: extractFace(ch.blendshapes, frames),
   };
 }
 

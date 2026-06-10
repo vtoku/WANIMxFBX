@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { ConvertedClip } from "../convert/clip.ts";
+import { FaceOverlay } from "./face.ts";
 
 const BG = 0x0e1014;
 
@@ -29,6 +30,10 @@ export class PreviewScene {
   private links: Array<[number, number]> = [];
   private lines: THREE.LineSegments | null = null;
   private joints: THREE.Points | null = null;
+
+  private face: FaceOverlay | null = null;
+  private headIndex = -1;
+  private faceWeights: Float32Array | null = null;
 
   private time = 0;
   private playing = false;
@@ -63,6 +68,30 @@ export class PreviewScene {
     this.ro.observe(container);
     this.resize();
     this.animate();
+
+    // Load the ARKit face head in the background; attach once the clip is ready.
+    FaceOverlay.load()
+      .then((f) => {
+        this.face = f;
+        this.attachFace();
+      })
+      .catch((err) => console.warn("face overlay unavailable:", err));
+  }
+
+  private attachFace() {
+    const face = this.face;
+    if (!face || !this.clip || this.headIndex < 0 || !this.clip.face || !face.hasMorphs()) return;
+    const head = this.boneNodes[this.headIndex];
+    if (!head) return;
+    face.group.parent?.remove(face.group);
+    head.add(face.group);
+    // Seat the head: ~0.2 m tall, lifted above the neck-top joint, turned to
+    // face the same way as the body (skeleton faces -Z after the Unity flip).
+    face.group.scale.setScalar(0.2);
+    face.group.position.set(0, 0.1, 0);
+    face.group.rotation.set(0, Math.PI, 0);
+    face.bindNames(this.clip.face.names);
+    this.faceWeights = new Float32Array(this.clip.face.names.length);
   }
 
   private resize() {
@@ -85,12 +114,16 @@ export class PreviewScene {
       return o;
     });
     const root = new THREE.Group();
+    // The Unity→right-handed Z-flip leaves the performer facing -Z (away from
+    // the default camera). Turn the whole rig to face the viewer for preview.
+    root.rotation.y = Math.PI;
     clip.parents.forEach((p, i) => {
       if (p >= 0) nodes[p].add(nodes[i]);
       else root.add(nodes[i]);
     });
     this.boneNodes = nodes;
     this.boneRoot = root;
+    this.headIndex = clip.names.indexOf("Head");
     this.scene.add(root);
 
     // Links = every parent→child pair (skip the root, which has no parent).
@@ -123,6 +156,9 @@ export class PreviewScene {
     this.joints.frustumCulled = false;
     this.scene.add(this.joints);
 
+    this.faceWeights = null;
+    this.attachFace();
+
     this.time = 0;
     this.playing = true;
     this.applyPose(0);
@@ -130,9 +166,9 @@ export class PreviewScene {
     this.emitState();
   }
 
-  private sampleInto(time: number) {
-    const clip = this.clip;
-    if (!clip) return;
+  /** Map a playback time (seconds from clip start) to a frame index + fraction. */
+  private locate(time: number): { i: number; frac: number } {
+    const clip = this.clip!;
     const times = clip.times;
     const t = times[0] + Math.max(0, Math.min(clip.duration, time));
     let i = 0;
@@ -141,6 +177,13 @@ export class PreviewScene {
     const tb = times[i + 1] ?? ta;
     const span = tb - ta;
     const frac = span > 1e-9 ? Math.max(0, Math.min(1, (t - ta) / span)) : 0;
+    return { i, frac };
+  }
+
+  private sampleInto(time: number) {
+    const clip = this.clip;
+    if (!clip) return;
+    const { i, frac } = this.locate(time);
 
     const qa = new THREE.Quaternion();
     const qb = new THREE.Quaternion();
@@ -183,6 +226,18 @@ export class PreviewScene {
       jointPos.setXYZ(i, wp.x, wp.y, wp.z);
     }
     jointPos.needsUpdate = true;
+
+    // Drive the face blendshapes from the recorded weights at this time.
+    if (this.face && this.faceWeights && this.clip?.face) {
+      const { i, frac } = this.locate(time);
+      const tracks = this.clip.face.tracks;
+      for (let n = 0; n < tracks.length; n++) {
+        const a = tracks[n][i];
+        const b = tracks[n][i + 1] ?? a;
+        this.faceWeights[n] = a + (b - a) * frac;
+      }
+      this.face.applyWeights(this.faceWeights);
+    }
   }
 
   private frameCamera() {
@@ -269,6 +324,9 @@ export class PreviewScene {
     cancelAnimationFrame(this.rafId);
     this.ro.disconnect();
     this.clearClip();
+    this.face?.group.parent?.remove(this.face.group);
+    this.face?.dispose();
+    this.face = null;
     this.controls.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();

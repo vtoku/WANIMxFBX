@@ -66,9 +66,10 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       </select>
     </label>
     <button id="download" class="button primary">Download FBX</button>
-    <p class="note">Skeletal animation only — blendshapes, mesh, and props are
-      not exported. Verify rotation order in your DCC; if limbs twist, see the
-      FBX notes.</p>
+    <p class="note">The preview head is a stand-in driven by the recorded ARKit
+      blendshapes (face data is not part of the FBX). The exported FBX is
+      skeletal animation only — no mesh, blendshapes, or props. Verify rotation
+      order in your DCC; if limbs twist, see the FBX notes.</p>
     <button id="reset" class="button ghost">Load another file</button>
   `;
 

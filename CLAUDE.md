@@ -73,6 +73,8 @@ No unit-test framework yet — the three `npm run` scripts above are the regress
   → src/fbx/animationFbx.ts: ASCII FBX 7.4 — LimbNode skeleton + AnimationStack/Layer, per-bone Lcl Rotation
                           curves + Hips Lcl Translation curve. meters→cm, Y-up.
   → src/preview/scene.ts: Three.js Object3D bone hierarchy driven per-frame; LineSegments + Points stick figure.
+  → src/preview/face.ts:  ARKit face overlay — loads public/facecap-head.glb, seats it at the Head joint,
+                          drives morph targets from the recorded blendshapes. PREVIEW ONLY (not in the FBX).
 ```
 
 `src/convert/skeleton.ts` holds the Unity HumanBodyBones parent table; `src/convert/quat.ts` holds quat math + the quat→Euler-ZYX extraction. The parser is output-agnostic from the writer.
@@ -90,4 +92,6 @@ No unit-test framework yet — the three `npm run` scripts above are the regress
 - **Hips vs. root**: `convertCharacter` bakes the character root (fields 5/6) into the Hips, so Hips (the FBX root LimbNode, parented to scene) carries full world translation+rotation; all other bones stay local-to-parent. Limb bones export rotation curves only; their translation is constant at the frame-0 bind offset.
 - **Variable frame timing**: timestamps are render frames, not a fixed clock (~57–60 fps, irregular). `resample()` is mandatory before export; the preview instead plays the raw timestamps in real time so it needs no resampling.
 - **Bone positions are local-to-parent** (e.g. LeftLowerLeg ≈ `(0,−0.40,0.01)` = thigh length), EXCEPT Hips which is character-root-relative. Don't treat them as world positions.
-- **Blendshape channels** (field 4) are parsed and counted but not exported — they'd only matter with a mesh carrying matching morph targets, which `.wanim` cannot supply.
+- **Blendshape channels** (field 4) are parsed into `ConvertedClip.face` and played on the preview face overlay, but NOT exported to FBX — that would need a mesh with matching morph targets, which `.wanim` cannot supply.
+- **Face overlay model**: `public/facecap-head.glb` is the three.js "facecap" head (by Face Cap / Bannaflak) with its KTX2 textures **stripped** (`scripts/stripGlbTextures.mjs`) so it loads without a Basis transcoder; geometry is meshopt-compressed, decoded in-browser via `MeshoptDecoder` (pure JS, bundled — no public wasm). To regenerate: download `examples/models/gltf/facecap.glb` from three.js, run the strip script. Its morphs use `_L`/`_R` suffixes vs. the recordings' Apple `Left`/`Right` — `toFacecapName()` in `face.ts` maps them. **Credit Face Cap/Bannaflak** (footer + README) — don't drop it.
+- **Preview faces the camera via a 180° Y rotation on the bone root** (`scene.ts`); the Unity→RH Z-flip otherwise leaves the performer facing away. This is preview-only and does not touch the exported transforms.
