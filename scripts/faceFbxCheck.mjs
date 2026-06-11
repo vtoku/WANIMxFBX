@@ -11,7 +11,7 @@ const { parseWanim } = await import("../src/wanim/parse.ts");
 const { convertCharacter, resample, retargetProportions } = await import("../src/convert/clip.ts");
 const { writeAnimationFbx } = await import("../src/fbx/animationFbx.ts");
 const { buildFaceMesh } = await import("../src/convert/meshExport.ts");
-const { extractBodyMeshes, bodyToSkinnedMeshExports, bodyJointsForBones } = await import("../src/convert/body.ts");
+const { extractBodyMeshes, bodyToSkinnedMeshExports } = await import("../src/convert/body.ts");
 
 const loadGlb = async (path) => {
   const loader = new GLTFLoader();
@@ -59,15 +59,16 @@ const buf = readFileSync(process.argv[2] ?? "C:\\Users\\VTOKU\\Downloads\\All-Th
 const clip = parseWanim(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
 let converted = convertCharacter(clip, 0);
 const bodyGltfEarly = await loadGlb("public/body.glb");
-if (process.env.WANIM_PROPORTIONS === "ybot") {
-  converted = retargetProportions(converted, bodyJointsForBones(bodyGltfEarly.scene, converted.names));
-  console.log("proportions: ybot");
+if (process.env.WANIM_PROPORTIONS === "body") {
+  const probe = extractBodyMeshes(bodyGltfEarly.scene, converted.parents, converted.bindPos, converted.names);
+  converted = retargetProportions(converted, probe.joints);
+  console.log("proportions: body skeleton");
 }
 const resampled = resample(converted, 30);
 
 // --- meshes ---
 const meshes = [buildFaceMesh(resampled, faceData)];
-const bodyData = extractBodyMeshes(bodyGltfEarly.scene, resampled.parents, resampled.bindPos, resampled.names);
+const bodyData = extractBodyMeshes(bodyGltfEarly.scene, resampled.parents, resampled.bindPos, resampled.names).meshes;
 console.log("body meshes:", bodyData.map((m) => `${m.name}(${m.positions.length / 3}v ${m.indices.length / 3}t)`).join(", "));
 meshes.push(...bodyToSkinnedMeshExports(bodyData));
 console.log("face channels:", meshes[0].channels.length);
@@ -93,6 +94,6 @@ if (bodyMesh) {
   console.log("body bbox y:", bb.min.y.toFixed(1), "..", bb.max.y.toFixed(1), "cm; z:", bb.min.z.toFixed(1), "..", bb.max.z.toFixed(1));
 }
 if (bones < 50) throw new Error("bones missing");
-if (skinned < 3) throw new Error(`expected 3 skinned meshes (face+2 body), got ${skinned}`);
+if (skinned < 2) throw new Error(`expected face + body skinned meshes, got ${skinned}`);
 if (process.argv[3]) { writeFileSync(process.argv[3], fbx); console.log("wrote", process.argv[3]); }
 console.log("OK");

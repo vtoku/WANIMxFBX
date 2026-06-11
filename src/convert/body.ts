@@ -7,11 +7,19 @@ import { MOTIONBUILDER_NAMES } from "./skeleton.ts";
 import type { SkinnedMeshExport } from "../fbx/animationFbx.ts";
 
 /**
- * The Mixamo Xbot/Ybot body (three.js example model), retargeted onto the
- * recording's skeleton: per-vertex linear-blend re-bake from Xbot's bind pose
- * into OUR T-pose world space, with weights remapped from mixamorig bones to
- * the HumanBodyBones indices. Head/eye triangles are dropped — the facecap
- * head replaces them.
+ * Weighted body mesh, retargeted onto the recording's skeleton.
+ *
+ * The bundled body is Quaternius' "Animated Base Character" (CC0) — a smooth
+ * skinned human. Pipeline (works for ANY humanoid GLB, regardless of how its
+ * bind matrices were exported):
+ *   1. map source bone names → our HumanBodyBones indices,
+ *   2. FK-align the source skeleton's rest pose to OUR T-pose (rotate each
+ *      bone so its segment direction matches ours — fixes A-poses and facing),
+ *   3. evaluate the skin CPU-side in that aligned pose (true skinning math),
+ *   4. transfer each vertex: offset from its bone's joint, STRETCHED along
+ *      the bone axis by the segment-length ratio (girth preserved), placed at
+ *      our joint, blended by the original weights.
+ * Head/eye geometry is dropped — the Face mesh replaces it.
  */
 export interface BodyMeshData {
   name: string;
@@ -24,6 +32,66 @@ export interface BodyMeshData {
   skinWeight: Float32Array;
 }
 
+// Blender/Rigify-style names (Quaternius) → Unity HumanBodyBones names.
+const RIGIFY_MAP: Record<string, string> = {
+  hips: "Hips",
+  spine001: "Spine",
+  spine002: "Chest",
+  spine003: "UpperChest",
+  neck: "Neck",
+  head: "Head",
+  shoulderL: "LeftShoulder",
+  upper_armL: "LeftUpperArm",
+  forearmL: "LeftLowerArm",
+  handL: "LeftHand",
+  thumb01L: "LeftThumbProximal",
+  thumb02L: "LeftThumbIntermediate",
+  thumb03L: "LeftThumbDistal",
+  f_index01L: "LeftIndexProximal",
+  f_index02L: "LeftIndexIntermediate",
+  f_index03L: "LeftIndexDistal",
+  f_middle01L: "LeftMiddleProximal",
+  f_middle02L: "LeftMiddleIntermediate",
+  f_middle03L: "LeftMiddleDistal",
+  f_ring01L: "LeftRingProximal",
+  f_ring02L: "LeftRingIntermediate",
+  f_ring03L: "LeftRingDistal",
+  f_pinky01L: "LeftLittleProximal",
+  f_pinky02L: "LeftLittleIntermediate",
+  f_pinky03L: "LeftLittleDistal",
+  thighL: "LeftUpperLeg",
+  shinL: "LeftLowerLeg",
+  footL: "LeftFoot",
+  toeL: "LeftToes",
+  shoulderR: "RightShoulder",
+  upper_armR: "RightUpperArm",
+  forearmR: "RightLowerArm",
+  handR: "RightHand",
+  thumb01R: "RightThumbProximal",
+  thumb02R: "RightThumbIntermediate",
+  thumb03R: "RightThumbDistal",
+  f_index01R: "RightIndexProximal",
+  f_index02R: "RightIndexIntermediate",
+  f_index03R: "RightIndexDistal",
+  f_middle01R: "RightMiddleProximal",
+  f_middle02R: "RightMiddleIntermediate",
+  f_middle03R: "RightMiddleDistal",
+  f_ring01R: "RightRingProximal",
+  f_ring02R: "RightRingIntermediate",
+  f_ring03R: "RightRingDistal",
+  f_pinky01R: "RightLittleProximal",
+  f_pinky02R: "RightLittleIntermediate",
+  f_pinky03R: "RightLittleDistal",
+  thighR: "RightUpperLeg",
+  shinR: "RightLowerLeg",
+  footR: "RightFoot",
+  toeR: "RightToes",
+};
+
+function normalizeBoneName(raw: string): string {
+  return raw.replace(/^mixamorig:?/, "").replace(/^DEF-/, "").replace(/[. ]/g, "");
+}
+
 let gltfCache: Promise<{ scene: THREE.Object3D }> | null = null;
 
 function loadBodyGltf(): Promise<{ scene: THREE.Object3D }> {
@@ -34,14 +102,20 @@ function loadBodyGltf(): Promise<{ scene: THREE.Object3D }> {
   return gltfCache;
 }
 
+export interface BodyExtract {
+  meshes: BodyMeshData[];
+  /** Source-skeleton joint world positions per OUR bone index (meters, after T-pose alignment), or null. */
+  joints: (Vec3 | null)[];
+}
+
 // buildBodyData results depend on the skeleton's bind, so cache per-bind.
-let bodyCache: { key: string; data: Promise<BodyMeshData[]> } | null = null;
+let bodyCache: { key: string; data: Promise<BodyExtract> } | null = null;
 
 export function buildBodyData(
   parents: number[],
   bindPos: Vec3[],
   unityNames: string[],
-): Promise<BodyMeshData[]> {
+): Promise<BodyExtract> {
   const key = bindPos.map((p) => p.map((v) => v.toFixed(4)).join(",")).join(";");
   if (bodyCache?.key === key) return bodyCache.data;
   const data = loadBodyGltf().then((gltf) =>
@@ -51,199 +125,241 @@ export function buildBodyData(
   return data;
 }
 
-/** Xbot joint world positions per OUR bone index (meters; null if unmapped). */
-export function bodyJointsForBones(scene: THREE.Object3D, unityNames: string[]): (Vec3 | null)[] {
-  scene.updateWorldMatrix(true, true);
-  let skeleton: THREE.Skeleton | null = null;
-  scene.traverse((o) => {
-    const m = o as THREE.SkinnedMesh;
-    if (m.isSkinnedMesh) skeleton = m.skeleton;
-  });
-  if (!skeleton) return unityNames.map(() => null);
-  const sk = skeleton as THREE.Skeleton;
-  const byName = new Map<string, number>();
-  sk.bones.forEach((b, j) => byName.set(b.name.replace(/^mixamorig:?/, ""), j));
-  return unityNames.map((u) => {
-    const j = byName.get(MOTIONBUILDER_NAMES[u] ?? u);
-    if (j === undefined) return null;
-    const p = new THREE.Vector3().setFromMatrixPosition(
-      new THREE.Matrix4().copy(sk.boneInverses[j]).invert(),
-    );
-    return [p.x, p.y, p.z];
-  });
-}
-
-/** Browser-side cached loader for the Xbot joints. */
-let jointsCache: Promise<(Vec3 | null)[]> | null = null;
-export function getBodyJoints(unityNames: string[]): Promise<(Vec3 | null)[]> {
-  if (jointsCache) return jointsCache;
-  jointsCache = loadBodyGltf().then((gltf) => bodyJointsForBones(gltf.scene, unityNames));
-  return jointsCache;
-}
-
-/** Pure retarget/extract step (also usable from node checks on a parsed GLTF). */
+/** Pure step (also usable from node checks on a parsed GLTF scene). */
 export function extractBodyMeshes(
   scene: THREE.Object3D,
   parents: number[],
   bindPos: Vec3[],
   unityNames: string[],
-): BodyMeshData[] {
-  {
-    const gltf = { scene };
-    gltf.scene.updateWorldMatrix(true, true);
+): BodyExtract {
+  scene.updateWorldMatrix(true, true);
+  const ourWorld = bindWorldPositions(parents, bindPos);
 
-    const ourWorld = bindWorldPositions(parents, bindPos);
+  // Unity name → our index, plus MoBu names (covers Mixamo-style rigs).
+  const nameToIndex = new Map<string, number>();
+  unityNames.forEach((u, i) => {
+    nameToIndex.set(u, i);
+    nameToIndex.set(MOTIONBUILDER_NAMES[u] ?? u, i);
+  });
 
-    // mixamorig name (sans prefix) → our bone index, via the MoBu name map.
-    const mobuToIndex = new Map<string, number>();
-    unityNames.forEach((u, i) => mobuToIndex.set(MOTIONBUILDER_NAMES[u] ?? u, i));
+  const skinnedMeshes: THREE.SkinnedMesh[] = [];
+  scene.traverse((o) => {
+    const m = o as THREE.SkinnedMesh;
+    if (m.isSkinnedMesh) skinnedMeshes.push(m);
+  });
+  if (skinnedMeshes.length === 0) return { meshes: [], joints: unityNames.map(() => null) };
+  const skeleton = skinnedMeshes[0].skeleton;
 
-    const headIdx = unityNames.indexOf("Head");
-    const eyeIdx = [unityNames.indexOf("LeftEye"), unityNames.indexOf("RightEye")];
+  // Source bone → our bone (walk up through unmapped helpers like HeadTop_End).
+  const boneOurIndex = skeleton.bones.map((b) => {
+    let cur: THREE.Object3D | null = b;
+    while (cur) {
+      const idx = nameToIndex.get(normalizeBoneName(cur.name)) ?? nameToIndex.get(RIGIFY_MAP[normalizeBoneName(cur.name)] ?? "");
+      if (idx !== undefined) return idx;
+      cur = cur.parent;
+    }
+    return 0;
+  });
+  const directlyMapped = skeleton.bones.map((b) => {
+    const n = normalizeBoneName(b.name);
+    return nameToIndex.has(n) || nameToIndex.has(RIGIFY_MAP[n] ?? "");
+  });
 
-    const meshes: BodyMeshData[] = [];
-    gltf.scene.traverse((o) => {
-      const m = o as THREE.SkinnedMesh;
-      if (!m.isSkinnedMesh) return;
+  const headIdx = unityNames.indexOf("Head");
+  const eyeIdx = [unityNames.indexOf("LeftEye"), unityNames.indexOf("RightEye")];
+  const boneIsHead = boneOurIndex.map((i) => i === headIdx || eyeIdx.includes(i));
 
-      const skeleton = m.skeleton;
-      // Per-GLB-bone: our bone index (walk up unmapped helper bones like
-      // HeadTop_End / Toe_End / HandThumb4) and whether it's part of the head.
-      const boneOurIndex = skeleton.bones.map((b) => {
-        let cur: THREE.Object3D | null = b;
-        while (cur) {
-          const stripped = cur.name.replace(/^mixamorig:?/, "");
-          const idx = mobuToIndex.get(stripped);
-          if (idx !== undefined) return idx;
-          cur = cur.parent;
-        }
-        return 0; // fall back to hips
-      });
-      const boneIsHead = boneOurIndex.map((i) => i === headIdx || eyeIdx.includes(i));
-
-      // Per-bone re-bake: v' = ourJoint + s_j · (v − xbotJoint), where s_j is
-      // the SEGMENT length ratio (our bone length / Xbot bone length). Pure
-      // translation alone squashes the torso / bloats the hips wherever the
-      // two rigs' joint spacing differs; per-segment scale maps each mesh
-      // chunk to the recorded character's proportions. Both rigs are Y-up
-      // T-poses, so no rotation is needed.
-      const jointWorld = skeleton.bones.map((_, j) =>
-        new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().copy(skeleton.boneInverses[j]).invert()),
+  // Our skeleton's children + segment axes (T-pose).
+  const ourChildren: number[][] = unityNames.map(() => []);
+  parents.forEach((p, i) => {
+    if (p >= 0) ourChildren[p].push(i);
+  });
+  const ourAxis: (THREE.Vector3 | null)[] = unityNames.map((_, m) => {
+    const dir = new THREE.Vector3();
+    for (const c of ourChildren[m]) {
+      dir.add(new THREE.Vector3(
+        ourWorld[c][0] - ourWorld[m][0],
+        ourWorld[c][1] - ourWorld[m][1],
+        ourWorld[c][2] - ourWorld[m][2],
+      ));
+    }
+    if (dir.lengthSq() < 1e-8 && parents[m] >= 0) {
+      dir.set(
+        ourWorld[m][0] - ourWorld[parents[m]][0],
+        ourWorld[m][1] - ourWorld[parents[m]][1],
+        ourWorld[m][2] - ourWorld[parents[m]][2],
       );
-      // Segment length = MEAN distance to all child bones (NOT the first child:
-      // Xbot lists LeftHand's thumb first but RightHand's pinky first, which
-      // gave the two hands different scales). Leaves use the parent segment.
-      const xbotChildren = skeleton.bones.map((b) =>
-        b.children
-          .filter((c) => (c as THREE.Bone).isBone)
-          .map((c) => skeleton.bones.indexOf(c as THREE.Bone))
-          .filter((j) => j >= 0),
-      );
-      const ourChildren: number[][] = unityNames.map(() => []);
-      parents.forEach((p, i) => {
-        if (p >= 0) ourChildren[p].push(i);
-      });
-      const segLen = (a: Vec3, b: Vec3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
-      const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
-      const boneScale = skeleton.bones.map((b, j) => {
-        const m = boneOurIndex[j];
-        let xLen = mean(xbotChildren[j].map((cj) => jointWorld[j].distanceTo(jointWorld[cj])));
-        if (xLen < 1e-4 && b.parent && (b.parent as THREE.Bone).isBone) {
-          const pj = skeleton.bones.indexOf(b.parent as THREE.Bone);
-          if (pj >= 0) xLen = jointWorld[pj].distanceTo(jointWorld[j]);
-        }
-        let oLen = mean(ourChildren[m].map((cm) => segLen(ourWorld[m], ourWorld[cm])));
-        if (oLen < 1e-4 && parents[m] >= 0) oLen = segLen(ourWorld[parents[m]], ourWorld[m]);
-        if (xLen < 1e-4 || oLen < 1e-4) return 1;
-        return Math.min(2.5, Math.max(0.3, oLen / xLen));
-      });
+    }
+    return dir.lengthSq() > 1e-8 ? dir.normalize() : null;
+  });
 
-      const geo = m.geometry;
-      const pos = geo.getAttribute("position");
-      const nrm = geo.getAttribute("normal");
-      const sIdx = geo.getAttribute("skinIndex");
-      const sWgt = geo.getAttribute("skinWeight");
-      const count = pos.count;
-      // GLTFLoader binds skins with bindMatrix = mesh.matrixWorld at load, so
-      // bindMatrix alone maps mesh-local → skeleton-bind world space.
-      const bindMatrix = m.bindMatrix;
-
-      const outPos = new Float32Array(count * 3);
-      const outNrm = new Float32Array(count * 3);
-      const outIdx = new Uint16Array(count * 4);
-      const outWgt = new Float32Array(count * 4);
-      const headWeight = new Float32Array(count);
-
-      const v = new THREE.Vector3();
-      const n = new THREE.Vector3();
-      const acc = new THREE.Vector3();
-      const normalMat = new THREE.Matrix3().getNormalMatrix(bindMatrix);
-
-      for (let i = 0; i < count; i++) {
-        v.fromBufferAttribute(pos, i).applyMatrix4(bindMatrix);
-        n.fromBufferAttribute(nrm, i).applyMatrix3(normalMat).normalize();
-        acc.set(0, 0, 0);
-        for (let k = 0; k < 4; k++) {
-          const j = sIdx.getComponent(i, k);
-          const w = sWgt.getComponent(i, k);
-          if (w === 0) continue;
-          // Offset from the Xbot joint, segment-scaled, placed at our joint.
-          // No rotation: the converted skeleton is turned to face +Z (HIK
-          // requirement), the same way Xbot faces.
-          const m = boneOurIndex[j];
-          const sc = boneScale[j];
-          acc.x += w * (ourWorld[m][0] + (v.x - jointWorld[j].x) * sc);
-          acc.y += w * (ourWorld[m][1] + (v.y - jointWorld[j].y) * sc);
-          acc.z += w * (ourWorld[m][2] + (v.z - jointWorld[j].z) * sc);
-          outIdx[i * 4 + k] = m;
-          outWgt[i * 4 + k] = w;
-          if (boneIsHead[j]) headWeight[i] += w;
-        }
-        outPos[i * 3] = acc.x; outPos[i * 3 + 1] = acc.y; outPos[i * 3 + 2] = acc.z;
-        outNrm[i * 3] = n.x; outNrm[i * 3 + 1] = n.y; outNrm[i * 3 + 2] = n.z;
-      }
-
-      // Drop head triangles (facecap head replaces them), then compact verts.
-      const srcIndices = geo.index
-        ? (geo.index.array as ArrayLike<number>)
-        : Array.from({ length: count }, (_, i) => i);
-      const keptTris: number[] = [];
-      for (let t = 0; t < srcIndices.length; t += 3) {
-        const a = srcIndices[t], b = srcIndices[t + 1], c = srcIndices[t + 2];
-        const hw = (headWeight[a] + headWeight[b] + headWeight[c]) / 3;
-        if (hw < 0.5) keptTris.push(a, b, c);
-      }
-      const remap = new Int32Array(count).fill(-1);
-      let next = 0;
-      for (const vi of keptTris) if (remap[vi] < 0) remap[vi] = next++;
-      const positions = new Float32Array(next * 3);
-      const normals = new Float32Array(next * 3);
-      const skinIndex = new Uint16Array(next * 4);
-      const skinWeight = new Float32Array(next * 4);
-      for (let i = 0; i < count; i++) {
-        const r = remap[i];
-        if (r < 0) continue;
-        positions.set(outPos.subarray(i * 3, i * 3 + 3), r * 3);
-        normals.set(outNrm.subarray(i * 3, i * 3 + 3), r * 3);
-        skinIndex.set(outIdx.subarray(i * 4, i * 4 + 4), r * 4);
-        skinWeight.set(outWgt.subarray(i * 4, i * 4 + 4), r * 4);
-      }
-      const indices = new Uint32Array(keptTris.length);
-      for (let t = 0; t < keptTris.length; t++) indices[t] = remap[keptTris[t]];
-
-      meshes.push({
-        name: m.name.replace(/^Beta_/, "Body"),
-        positions,
-        normals,
-        indices,
-        skinIndex,
-        skinWeight,
-      });
+  // --- 2. FK-align the source rest pose to OUR T-pose -----------------------
+  // Visit bones parents-first; rotate each so its (mean child) segment
+  // direction matches our corresponding segment direction in world space.
+  const order = [...skeleton.bones].sort((a, b) => {
+    const depth = (o: THREE.Object3D) => {
+      let d = 0;
+      for (let p = o.parent; p; p = p.parent) d++;
+      return d;
+    };
+    return depth(a) - depth(b);
+  });
+  const childBones = (b: THREE.Bone) => b.children.filter((c) => (c as THREE.Bone).isBone) as THREE.Bone[];
+  const tmpQ = new THREE.Quaternion();
+  const parentQ = new THREE.Quaternion();
+  for (const b of order) {
+    const j = skeleton.bones.indexOf(b);
+    const m = boneOurIndex[j];
+    if (!directlyMapped[j]) continue;
+    const target = ourAxis[m];
+    if (!target) continue;
+    const kids = childBones(b).filter((c) => {
+      const cj = skeleton.bones.indexOf(c);
+      return cj >= 0 && directlyMapped[cj] && boneOurIndex[cj] !== m;
     });
-
-    return meshes;
+    if (kids.length === 0) continue;
+    scene.updateWorldMatrix(true, true);
+    const own = b.getWorldPosition(new THREE.Vector3());
+    const cur = new THREE.Vector3();
+    for (const c of kids) cur.add(c.getWorldPosition(new THREE.Vector3()).sub(own));
+    if (cur.lengthSq() < 1e-10) continue;
+    cur.normalize();
+    // World-space corrective rotation, applied in the bone's local frame.
+    tmpQ.setFromUnitVectors(cur, target);
+    b.parent!.getWorldQuaternion(parentQ);
+    const localCorrection = parentQ.clone().invert().multiply(tmpQ).multiply(parentQ);
+    b.quaternion.premultiply(localCorrection);
   }
+  scene.updateWorldMatrix(true, true);
+  for (const m of skinnedMeshes) m.skeleton.update();
+
+  // Aligned source joint positions (world, meters).
+  const jointWorld = skeleton.bones.map((b) => b.getWorldPosition(new THREE.Vector3()));
+  const joints: (Vec3 | null)[] = unityNames.map(() => null);
+  skeleton.bones.forEach((_, j) => {
+    if (directlyMapped[j] && joints[boneOurIndex[j]] === null) {
+      const p = jointWorld[j];
+      joints[boneOurIndex[j]] = [p.x, p.y, p.z];
+    }
+  });
+
+  // Per-bone segment-length stretch ratio (mean over children on both sides).
+  const segLen = (a: Vec3, b: Vec3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+  const srcChildren = skeleton.bones.map((b) =>
+    childBones(b).map((c) => skeleton.bones.indexOf(c)).filter((x) => x >= 0),
+  );
+  const boneScale = skeleton.bones.map((b, j) => {
+    const m = boneOurIndex[j];
+    let xLen = mean(srcChildren[j].map((cj) => jointWorld[j].distanceTo(jointWorld[cj])));
+    if (xLen < 1e-4 && b.parent && (b.parent as THREE.Bone).isBone) {
+      const pj = skeleton.bones.indexOf(b.parent as THREE.Bone);
+      if (pj >= 0) xLen = jointWorld[pj].distanceTo(jointWorld[j]);
+    }
+    let oLen = mean(ourChildren[m].map((cm) => segLen(ourWorld[m], ourWorld[cm])));
+    if (oLen < 1e-4 && parents[m] >= 0) oLen = segLen(ourWorld[parents[m]], ourWorld[m]);
+    if (xLen < 1e-4 || oLen < 1e-4) return 1;
+    return Math.min(2.5, Math.max(0.3, oLen / xLen));
+  });
+
+  // --- 3+4. evaluate skin in the aligned pose; transfer vertices -----------
+  const meshes: BodyMeshData[] = [];
+  for (const m of skinnedMeshes) {
+    const geo = m.geometry;
+    const pos = geo.getAttribute("position");
+    const sIdx = geo.getAttribute("skinIndex");
+    const sWgt = geo.getAttribute("skinWeight");
+    const count = pos.count;
+
+    const outPos = new Float32Array(count * 3);
+    const outIdx = new Uint16Array(count * 4);
+    const outWgt = new Float32Array(count * 4);
+    const headWeight = new Float32Array(count);
+
+    const v = new THREE.Vector3();
+    const acc = new THREE.Vector3();
+
+    for (let i = 0; i < count; i++) {
+      // True skinned world position in the aligned pose.
+      v.fromBufferAttribute(pos, i);
+      m.applyBoneTransform(i, v);
+      m.localToWorld(v);
+      acc.set(0, 0, 0);
+      let wsum = 0;
+      for (let k = 0; k < 4; k++) {
+        const j = sIdx.getComponent(i, k);
+        const w = sWgt.getComponent(i, k);
+        if (w === 0) continue;
+        const mi = boneOurIndex[j];
+        const ax = ourAxis[mi] ?? Y_UP;
+        const ox = v.x - jointWorld[j].x;
+        const oy = v.y - jointWorld[j].y;
+        const oz = v.z - jointWorld[j].z;
+        const axial = ox * ax.x + oy * ax.y + oz * ax.z;
+        const stretch = axial * (boneScale[j] - 1);
+        acc.x += w * (ourWorld[mi][0] + ox + ax.x * stretch);
+        acc.y += w * (ourWorld[mi][1] + oy + ax.y * stretch);
+        acc.z += w * (ourWorld[mi][2] + oz + ax.z * stretch);
+        outIdx[i * 4 + k] = mi;
+        outWgt[i * 4 + k] = w;
+        wsum += w;
+        if (boneIsHead[j]) headWeight[i] += w;
+      }
+      if (wsum > 1e-6) acc.multiplyScalar(1 / wsum);
+      outPos[i * 3] = acc.x; outPos[i * 3 + 1] = acc.y; outPos[i * 3 + 2] = acc.z;
+    }
+
+    // Drop head triangles (Face mesh replaces them), then compact verts.
+    const srcIndices = geo.index
+      ? (geo.index.array as ArrayLike<number>)
+      : Array.from({ length: count }, (_, i) => i);
+    const keptTris: number[] = [];
+    for (let t = 0; t < srcIndices.length; t += 3) {
+      const a = srcIndices[t], b2 = srcIndices[t + 1], c2 = srcIndices[t + 2];
+      const hw = (headWeight[a] + headWeight[b2] + headWeight[c2]) / 3;
+      // Aggressive cut: partially-head-weighted boundary tris leave spiky
+      // collar geometry if kept.
+      if (hw < 0.2) keptTris.push(a, b2, c2);
+    }
+    const remap = new Int32Array(count).fill(-1);
+    let next = 0;
+    for (const vi of keptTris) if (remap[vi] < 0) remap[vi] = next++;
+    if (next === 0) continue;
+    const positions = new Float32Array(next * 3);
+    const skinIndex = new Uint16Array(next * 4);
+    const skinWeight = new Float32Array(next * 4);
+    for (let i = 0; i < count; i++) {
+      const r = remap[i];
+      if (r < 0) continue;
+      positions.set(outPos.subarray(i * 3, i * 3 + 3), r * 3);
+      skinIndex.set(outIdx.subarray(i * 4, i * 4 + 4), r * 4);
+      skinWeight.set(outWgt.subarray(i * 4, i * 4 + 4), r * 4);
+    }
+    const indices = new Uint32Array(keptTris.length);
+    for (let t = 0; t < keptTris.length; t++) indices[t] = remap[keptTris[t]];
+
+    // Recompute smooth normals on the transferred geometry.
+    const tmpGeo = new THREE.BufferGeometry();
+    tmpGeo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    tmpGeo.setIndex(new THREE.Uint32BufferAttribute(indices, 1));
+    tmpGeo.computeVertexNormals();
+    const normals = new Float32Array(tmpGeo.getAttribute("normal").array as ArrayLike<number>);
+    tmpGeo.dispose();
+
+    meshes.push({
+      name: meshes.length === 0 ? "Body" : `Body${meshes.length + 1}`,
+      positions,
+      normals,
+      indices,
+      skinIndex,
+      skinWeight,
+    });
+  }
+
+  return { meshes, joints };
 }
+
+const Y_UP = new THREE.Vector3(0, 1, 0);
 
 /** Convert preview-space body data (meters) into FBX skinned-mesh exports (cm). */
 export function bodyToSkinnedMeshExports(meshes: BodyMeshData[]): SkinnedMeshExport[] {
@@ -253,8 +369,8 @@ export function bodyToSkinnedMeshExports(meshes: BodyMeshData[]): SkinnedMeshExp
     const normals = new Float64Array(m.normals.length);
     normals.set(m.normals);
 
-    // Gather per-bone clusters from the per-vertex influences.
-    const byBone = new Map<number, { idx: number[]; w: number[] }>();
+    // Gather per-bone clusters; merge duplicate influences per vertex.
+    const byBone = new Map<number, Map<number, number>>();
     const count = m.positions.length / 3;
     for (let i = 0; i < count; i++) {
       for (let k = 0; k < 4; k++) {
@@ -262,17 +378,25 @@ export function bodyToSkinnedMeshExports(meshes: BodyMeshData[]): SkinnedMeshExp
         if (w < 1e-4) continue;
         const bone = m.skinIndex[i * 4 + k];
         let entry = byBone.get(bone);
-        if (!entry) byBone.set(bone, (entry = { idx: [], w: [] }));
-        entry.idx.push(i);
-        entry.w.push(w);
+        if (!entry) byBone.set(bone, (entry = new Map()));
+        entry.set(i, (entry.get(i) ?? 0) + w);
       }
     }
-    const clusters = [...byBone.entries()].map(([boneIndex, e]) => ({
+    const clusters = [...byBone.entries()].map(([boneIndex, perVert]) => ({
       boneIndex,
-      pointIndices: Int32Array.from(e.idx),
-      weights: Float64Array.from(e.w),
+      pointIndices: Int32Array.from(perVert.keys()),
+      weights: Float64Array.from(perVert.values()),
     }));
 
     return { name: m.name, positions, normals, indices: m.indices, clusters };
   });
+}
+
+/** Browser-side cached loader for the body-skeleton joints (for proportions). */
+export function getBodyJoints(
+  parents: number[],
+  bindPos: Vec3[],
+  unityNames: string[],
+): Promise<(Vec3 | null)[]> {
+  return buildBodyData(parents, bindPos, unityNames).then((d) => d.joints);
 }

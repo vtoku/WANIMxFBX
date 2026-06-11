@@ -3,8 +3,10 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { bindWorldPositions, type ConvertedClip } from "../convert/clip.ts";
 import { buildBodyData } from "../convert/body.ts";
 import { buildBodyMeshes } from "./body.ts";
+
+export type BodyMode = "human" | "none";
 import { FaceOverlay } from "./face.ts";
-import { YBOT_HEAD_HEIGHT_M, YBOT_HEAD_LIFT_M, YBOT_HEAD_JOINT_Y } from "../convert/meshExport.ts";
+import { BODY_HEAD_HEIGHT_M, BODY_HEAD_LIFT_M, BODY_HEAD_JOINT_Y } from "../convert/meshExport.ts";
 
 const BG = 0x0e1014;
 
@@ -19,7 +21,7 @@ export interface PlaybackState {
 /**
  * Animated stick-figure preview of a ConvertedClip. Builds an Object3D bone
  * hierarchy, drives it per-frame from the recorded local transforms, and draws
- * each parent→child link as a line plus a joint dot. Playback runs in real time
+ * each parent-child link as a line plus a joint dot. Playback runs in real time
  * against the clip's recorded (variable-rate) timestamps.
  */
 export class PreviewScene {
@@ -86,20 +88,38 @@ export class PreviewScene {
       .catch((err) => console.warn("face overlay unavailable:", err));
   }
 
+  /** Which stand-in body to show. */
+  bodyMode: BodyMode = "human";
+
+  setBodyMode(mode: BodyMode) {
+    if (this.bodyMode === mode) return;
+    this.bodyMode = mode;
+    if (this.clip) this.attachBody(this.clip);
+  }
+
+  private clearBody() {
+    if (!this.body) return;
+    this.scene.remove(this.body);
+    this.body.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (mesh.geometry) mesh.geometry.dispose();
+    });
+    this.body = null;
+  }
+
   private attachBody(clip: ConvertedClip) {
-    if (this.body) {
-      this.scene.remove(this.body);
-      this.body = null;
-    }
+    this.clearBody();
+    if (this.bodyMode === "none") return;
+    const bindWorld = bindWorldPositions(clip.parents, clip.bindPos);
     const root = this.boneRoot;
     void buildBodyData(clip.parents, clip.bindPos, clip.names)
       .then((data) => {
-        // The clip may have been replaced while loading.
-        if (this.clip !== clip || this.boneRoot !== root || !root) return;
-        const bindWorld = bindWorldPositions(clip.parents, clip.bindPos);
-        this.body = buildBodyMeshes(data, this.boneNodes, bindWorld);
-        // At the scene root: the bones' world matrices already include the
-        // boneRoot display flip, so the skinned mesh must not inherit it too.
+        // The clip/mode may have changed while loading.
+        if (this.clip !== clip || this.boneRoot !== root || !root || this.bodyMode !== "human") return;
+        this.clearBody();
+        this.body = buildBodyMeshes(data.meshes, this.boneNodes, bindWorld);
+        // At the scene root: the bones' world matrices already include any
+        // root transform, so the skinned mesh must not inherit it too.
         this.scene.add(this.body);
       })
       .catch((err) => console.warn("body mesh unavailable:", err));
@@ -113,12 +133,12 @@ export class PreviewScene {
     face.group.parent?.remove(face.group);
     head.add(face.group);
     // Seat the head proportionally to the skeleton's head-joint height,
-    // matching Ybot's original head (0.267 m tall, centered 0.076 m above the
-    // joint, at 1.596 m). No rotation: facecap and skeleton both face +Z.
+    // matching the bundled body's own head (see measureBodyHead.mjs).
+    // No rotation: facecap and skeleton both face +Z.
     const headWorldY = bindWorldPositions(this.clip.parents, this.clip.bindPos)[this.headIndex][1];
-    const k = headWorldY / YBOT_HEAD_JOINT_Y;
-    face.group.scale.setScalar(YBOT_HEAD_HEIGHT_M * k);
-    face.group.position.set(0, YBOT_HEAD_LIFT_M * k, 0);
+    const k = headWorldY / BODY_HEAD_JOINT_Y;
+    face.group.scale.setScalar(BODY_HEAD_HEIGHT_M * k);
+    face.group.position.set(0, BODY_HEAD_LIFT_M * k, 0);
     face.group.rotation.set(0, 0, 0);
     face.bindNames(this.clip.face.names);
     this.faceWeights = new Float32Array(this.clip.face.names.length);
@@ -144,7 +164,7 @@ export class PreviewScene {
     });
     const root = new THREE.Group();
     // The converted clip already faces +Z (the HIK convention), which is also
-    // toward the preview camera — no display rotation needed.
+    // toward the preview camera - no display rotation needed.
     clip.parents.forEach((p, i) => {
       if (p >= 0) nodes[p].add(nodes[i]);
       else root.add(nodes[i]);
@@ -154,7 +174,7 @@ export class PreviewScene {
     this.headIndex = clip.names.indexOf("Head");
     this.scene.add(root);
 
-    // Links = every parent→child pair (skip the root, which has no parent).
+    // Links = every parent-child pair (skip the root, which has no parent).
     this.links = [];
     clip.parents.forEach((p, i) => {
       if (p >= 0) this.links.push([p, i]);
@@ -349,14 +369,7 @@ export class PreviewScene {
   }
 
   private clearClip() {
-    if (this.body) {
-      this.scene.remove(this.body);
-      this.body.traverse((o) => {
-        const mesh = o as THREE.Mesh;
-        if (mesh.geometry) mesh.geometry.dispose();
-      });
-      this.body = null;
-    }
+    this.clearBody();
     if (this.boneRoot) {
       this.scene.remove(this.boneRoot);
       this.boneRoot = null;

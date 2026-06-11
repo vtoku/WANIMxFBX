@@ -7,7 +7,7 @@ import { remapNames, type NameScheme } from "./convert/skeleton.ts";
 import { buildFaceMesh } from "./convert/meshExport.ts";
 import { buildBodyData, bodyToSkinnedMeshExports, getBodyJoints } from "./convert/body.ts";
 import { sanitizeFilename, downloadBytes } from "./fbx/export.ts";
-import { PreviewScene } from "./preview/scene.ts";
+import { PreviewScene, type BodyMode } from "./preview/scene.ts";
 import { loadFaceMeshData } from "./preview/face.ts";
 import { createTransport, type Transport } from "./ui/transport.ts";
 
@@ -110,8 +110,8 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     <label class="field">
       <span>Proportions</span>
       <select id="proportions">
-        <option value="recorded" selected>Recorded avatar</option>
-        <option value="ybot">Ybot skeleton</option>
+        <option value="body" selected>Body-mesh skeleton (clean mesh)</option>
+        <option value="recorded">Recorded avatar (approx. mesh fit)</option>
       </select>
     </label>
     <label class="field">
@@ -119,8 +119,11 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       <input id="face" type="checkbox" ${converted.face ? "checked" : "disabled"} />
     </label>
     <label class="field">
-      <span>Ybot body mesh</span>
-      <input id="body" type="checkbox" checked />
+      <span>Body mesh</span>
+      <select id="body">
+        <option value="human" selected>Human (CC0)</option>
+        <option value="none">None</option>
+      </select>
     </label>
     <button id="download" class="button primary">Download FBX</button>
     <p class="note">Trim with the in/out handles on the timeline. Exports binary
@@ -141,7 +144,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   const restSel = document.getElementById("rest") as HTMLSelectElement;
   const propSel = document.getElementById("proportions") as HTMLSelectElement;
   const faceChk = document.getElementById("face") as HTMLInputElement;
-  const bodyChk = document.getElementById("body") as HTMLInputElement;
+  const bodySel = document.getElementById("body") as HTMLSelectElement;
   const downloadBtn = document.getElementById("download") as HTMLButtonElement;
   const resetBtn = document.getElementById("reset") as HTMLButtonElement;
 
@@ -156,9 +159,12 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     if (!loaded || !preview) return;
     const opts = cleanOpts();
     let display = opts.despike || opts.smooth ? cleanClip(loaded.converted, opts) : loaded.converted;
-    if (propSel.value === "ybot") {
+    if (propSel.value === "body") {
       try {
-        display = retargetProportions(display, await getBodyJoints(display.names));
+        display = retargetProportions(
+          display,
+          await getBodyJoints(display.parents, display.bindPos, display.names),
+        );
       } catch (err) {
         showError(err instanceof Error ? err.message : String(err));
       }
@@ -176,6 +182,10 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   for (const c of [despikeChk, smoothChk]) c.addEventListener("change", () => void reclean());
   for (const r of [despikeDeg, cutoff]) r.addEventListener("change", () => void reclean());
   propSel.addEventListener("change", () => void reclean());
+  bodySel.addEventListener("change", () => preview?.setBodyMode(bodySel.value as BodyMode));
+
+  // Apply the default proportions selection (body-mesh skeleton) on load.
+  void reclean();
 
   downloadBtn.addEventListener("click", async () => {
     if (!loaded) return;
@@ -192,9 +202,9 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         const mesh = await loadFaceMeshData();
         meshes.push(buildFaceMesh(resampled, mesh));
       }
-      if (bodyChk.checked) {
+      if (bodySel.value === "human") {
         const body = await buildBodyData(resampled.parents, resampled.bindPos, resampled.names);
-        meshes.push(...bodyToSkinnedMeshExports(body));
+        meshes.push(...bodyToSkinnedMeshExports(body.meshes));
       }
       const fbx = writeAnimationFbx(resampled, {
         takeName: sanitizeFilename(loaded.name),
