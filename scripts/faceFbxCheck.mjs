@@ -25,22 +25,31 @@ const faceGltf = await loadGlb("public/facecap-head.glb");
 let fmesh = null;
 faceGltf.scene.updateWorldMatrix(true, true);
 faceGltf.scene.traverse((o) => { if (o.isMesh && o.morphTargetDictionary) fmesh = o; });
+// Read via accessors — meshopt GLBs use interleaved attributes; raw `.array`
+// copies shred the mesh.
 const src = fmesh.geometry;
-const positions = new Float32Array(src.getAttribute("position").array);
-const normals = new Float32Array(src.getAttribute("normal").array);
-const indices = src.index ? new Uint32Array(src.index.array) : Uint32Array.from({ length: positions.length / 3 }, (_, i) => i);
+const posAttr = src.getAttribute("position");
+const nrmAttr = src.getAttribute("normal");
+const vcount = posAttr.count;
+const positions = new Float32Array(vcount * 3);
+const normals = new Float32Array(vcount * 3);
 const matW = fmesh.matrixWorld, v = new THREE.Vector3();
-for (let i = 0; i < positions.length; i += 3) { v.set(positions[i], positions[i + 1], positions[i + 2]).applyMatrix4(matW); positions[i] = v.x; positions[i + 1] = v.y; positions[i + 2] = v.z; }
 const nmat = new THREE.Matrix3().getNormalMatrix(matW);
-for (let i = 0; i < normals.length; i += 3) { v.set(normals[i], normals[i + 1], normals[i + 2]).applyMatrix3(nmat).normalize(); normals[i] = v.x; normals[i + 1] = v.y; normals[i + 2] = v.z; }
+for (let i = 0; i < vcount; i++) {
+  v.fromBufferAttribute(posAttr, i).applyMatrix4(matW);
+  positions[i * 3] = v.x; positions[i * 3 + 1] = v.y; positions[i * 3 + 2] = v.z;
+  v.fromBufferAttribute(nrmAttr, i).applyMatrix3(nmat).normalize();
+  normals[i * 3] = v.x; normals[i * 3 + 1] = v.y; normals[i * 3 + 2] = v.z;
+}
+const indices = src.index ? new Uint32Array(src.index.array) : Uint32Array.from({ length: vcount }, (_, i) => i);
 const box = new THREE.Box3().setFromArray(positions);
 const c = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
 const morphs = {};
 const lin = new THREE.Matrix3().setFromMatrix4(matW);
 for (const [name, idx] of Object.entries(fmesh.morphTargetDictionary)) {
   const a = src.morphAttributes.position[idx]; if (!a) continue;
-  const d = new Float32Array(a.array);
-  for (let i = 0; i < d.length; i += 3) { v.set(d[i], d[i + 1], d[i + 2]).applyMatrix3(lin); d[i] = v.x; d[i + 1] = v.y; d[i + 2] = v.z; }
+  const d = new Float32Array(vcount * 3);
+  for (let i = 0; i < vcount; i++) { v.fromBufferAttribute(a, i).applyMatrix3(lin); d[i * 3] = v.x; d[i * 3 + 1] = v.y; d[i * 3 + 2] = v.z; }
   morphs[name] = d;
 }
 const faceData = { positions, normals, indices, center: [c.x, c.y, c.z], height: size.y, morphs };

@@ -130,27 +130,30 @@ export function extractBodyMeshes(
       const jointWorld = skeleton.bones.map((_, j) =>
         new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().copy(skeleton.boneInverses[j]).invert()),
       );
-      const xbotChild = skeleton.bones.map((b) => {
-        const childBone = b.children.find((c) => (c as THREE.Bone).isBone);
-        return childBone ? skeleton.bones.indexOf(childBone as THREE.Bone) : -1;
-      });
-      const ourChild: number[] = unityNames.map(() => -1);
+      // Segment length = MEAN distance to all child bones (NOT the first child:
+      // Xbot lists LeftHand's thumb first but RightHand's pinky first, which
+      // gave the two hands different scales). Leaves use the parent segment.
+      const xbotChildren = skeleton.bones.map((b) =>
+        b.children
+          .filter((c) => (c as THREE.Bone).isBone)
+          .map((c) => skeleton.bones.indexOf(c as THREE.Bone))
+          .filter((j) => j >= 0),
+      );
+      const ourChildren: number[][] = unityNames.map(() => []);
       parents.forEach((p, i) => {
-        if (p >= 0 && ourChild[p] < 0) ourChild[p] = i;
+        if (p >= 0) ourChildren[p].push(i);
       });
       const segLen = (a: Vec3, b: Vec3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+      const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
       const boneScale = skeleton.bones.map((b, j) => {
         const m = boneOurIndex[j];
-        // Segment = joint→first child; for leaves use the parent segment.
-        let xLen = 0;
-        if (xbotChild[j] >= 0) xLen = jointWorld[j].distanceTo(jointWorld[xbotChild[j]]);
-        else if (b.parent && (b.parent as THREE.Bone).isBone) {
+        let xLen = mean(xbotChildren[j].map((cj) => jointWorld[j].distanceTo(jointWorld[cj])));
+        if (xLen < 1e-4 && b.parent && (b.parent as THREE.Bone).isBone) {
           const pj = skeleton.bones.indexOf(b.parent as THREE.Bone);
           if (pj >= 0) xLen = jointWorld[pj].distanceTo(jointWorld[j]);
         }
-        let oLen = 0;
-        if (ourChild[m] >= 0) oLen = segLen(ourWorld[m], ourWorld[ourChild[m]]);
-        else if (parents[m] >= 0) oLen = segLen(ourWorld[parents[m]], ourWorld[m]);
+        let oLen = mean(ourChildren[m].map((cm) => segLen(ourWorld[m], ourWorld[cm])));
+        if (oLen < 1e-4 && parents[m] >= 0) oLen = segLen(ourWorld[parents[m]], ourWorld[m]);
         if (xLen < 1e-4 || oLen < 1e-4) return 1;
         return Math.min(2.5, Math.max(0.3, oLen / xLen));
       });

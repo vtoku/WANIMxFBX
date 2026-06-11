@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><style>body{margin:0;background:#202228}</style></head>
+<body>
+<script type="importmap">
+{ "imports": {
+  "three": "/WANIMxFBX/node_modules/three/build/three.module.js",
+  "three/addons/": "/WANIMxFBX/node_modules/three/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
+
+const params = new URLSearchParams(location.search);
+const file = params.get("file") ?? "full.fbx";
+const t = Number(params.get("t") ?? 0);
+const zoom = params.get("zoom"); // "head" for close-up
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(900, 700);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x202228);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.6), new THREE.AmbientLight(0xffffff, 0.5));
+scene.add(new THREE.GridHelper(400, 20, 0x3a3f4a, 0x2a2f37));
+
+const group = await new FBXLoader().loadAsync(`/WANIMxFBX/scripts/${file}`);
+scene.add(group);
+
+// Play the main clip to time t.
+const mixer = new THREE.AnimationMixer(group);
+const clip = group.animations.find((c) => !/TPose/i.test(c.name)) ?? group.animations[0];
+if (clip && t > 0) {
+  const action = mixer.clipAction(clip);
+  action.play();
+  mixer.update(t);
+}
+group.updateWorldMatrix(true, true);
+
+// Camera: full body or head close-up, from the front (+Z).
+let target = new THREE.Vector3(0, 100, 0), dist = 320;
+if (zoom === "head") {
+  const head = group.getObjectByName("Head");
+  if (head) head.getWorldPosition(target);
+  dist = 80;
+}
+const camera = new THREE.PerspectiveCamera(40, 900 / 700, 1, 5000);
+camera.position.set(target.x, target.y + 8, target.z + dist);
+camera.lookAt(target);
+renderer.render(scene, camera);
+window.__done = true;
+</script>
+</body>
+</html>
