@@ -35,6 +35,30 @@ export function sanitizeGlb(arrayBuffer: ArrayBuffer): ArrayBuffer {
   return arrayBuffer;
 }
 
+const BIN_CHUNK = 0x004e4942; // 'BIN\0'
+
+/** Both GLB chunks: parsed JSON + the binary payload. */
+export function parseGlbChunks(arrayBuffer: ArrayBuffer): { json: unknown; bin: Uint8Array | null } | null {
+  const dv = new DataView(arrayBuffer);
+  if (dv.byteLength < 12 || dv.getUint32(0, true) !== GLB_MAGIC) return null;
+  const totalLength = dv.getUint32(8, true);
+  let offset = 12;
+  let json: unknown = null;
+  let bin: Uint8Array | null = null;
+  while (offset + 8 <= totalLength) {
+    const chunkLength = dv.getUint32(offset, true);
+    const chunkType = dv.getUint32(offset + 4, true);
+    const dataStart = offset + 8;
+    if (chunkType === JSON_CHUNK) {
+      json = JSON.parse(new TextDecoder().decode(new Uint8Array(arrayBuffer, dataStart, chunkLength)));
+    } else if (chunkType === BIN_CHUNK) {
+      bin = new Uint8Array(arrayBuffer, dataStart, chunkLength);
+    }
+    offset = dataStart + chunkLength;
+  }
+  return json ? { json, bin } : null;
+}
+
 function glbJson(arrayBuffer: ArrayBuffer): unknown | null {
   const dv = new DataView(arrayBuffer);
   if (dv.byteLength < 12 || dv.getUint32(0, true) !== GLB_MAGIC) return null;

@@ -42,6 +42,10 @@ export interface SkinnedMeshExport {
   clusters: { boneIndex: number; pointIndices: Int32Array; weights: Float64Array }[];
   /** Optional blendshape channels (deltas in world-scale cm). */
   channels?: { name: string; deltas: Float64Array; weights: Float32Array }[];
+  /** Optional per-control-point UVs (2 floats per point). */
+  uv?: Float64Array;
+  /** Optional base-color texture, embedded into the FBX (PNG/JPEG bytes). */
+  texture?: { bytes: Uint8Array; mime: string };
 }
 
 export interface WriteAnimOpts {
@@ -289,7 +293,13 @@ export function writeAnimationFbx(clip: ResampledClip, opts: WriteAnimOpts = {})
 
     // The FBX SDK needs a normals layer to accept the node as a real Mesh —
     // without one, MotionBuilder imports the model as a Null (verified).
-    objects.push(node("Geometry", [L(geoId), S(objName(mesh.name, "Geometry")), S("Mesh")], [
+    const layerElems = [
+      node("LayerElement", [], [
+        node("Type", [S("LayerElementNormal")]),
+        node("TypedIndex", [I(0)]),
+      ]),
+    ];
+    const geoChildren = [
       node("GeometryVersion", [I(124)]),
       node("Vertices", [aD(mesh.positions)]),
       node("PolygonVertexIndex", [aI(poly)]),
@@ -300,14 +310,40 @@ export function writeAnimationFbx(clip: ResampledClip, opts: WriteAnimOpts = {})
         node("ReferenceInformationType", [S("Direct")]),
         node("Normals", [aD(mesh.normals)]),
       ]),
-      node("Layer", [I(0)], [
-        node("Version", [I(100)]),
-        node("LayerElement", [], [
-          node("Type", [S("LayerElementNormal")]),
-          node("TypedIndex", [I(0)]),
-        ]),
-      ]),
-    ]));
+    ];
+    if (mesh.uv) {
+      // Per-vertex UVs referenced by the polygon indices (the standard
+      // ByPolygonVertex / IndexToDirect form importers expect).
+      const uvIndex = new Int32Array(mesh.indices.length);
+      uvIndex.set(mesh.indices);
+      geoChildren.push(node("LayerElementUV", [I(0)], [
+        node("Version", [I(101)]),
+        node("Name", [S("UVMap")]),
+        node("MappingInformationType", [S("ByPolygonVertex")]),
+        node("ReferenceInformationType", [S("IndexToDirect")]),
+        node("UV", [aD(mesh.uv)]),
+        node("UVIndex", [aI(uvIndex)]),
+      ]));
+      layerElems.push(node("LayerElement", [], [
+        node("Type", [S("LayerElementUV")]),
+        node("TypedIndex", [I(0)]),
+      ]));
+    }
+    if (mesh.texture) {
+      geoChildren.push(node("LayerElementMaterial", [I(0)], [
+        node("Version", [I(101)]),
+        node("Name", [S("")]),
+        node("MappingInformationType", [S("AllSame")]),
+        node("ReferenceInformationType", [S("IndexToDirect")]),
+        node("Materials", [aI(new Int32Array([0]))]),
+      ]));
+      layerElems.push(node("LayerElement", [], [
+        node("Type", [S("LayerElementMaterial")]),
+        node("TypedIndex", [I(0)]),
+      ]));
+    }
+    geoChildren.push(node("Layer", [I(0)], [node("Version", [I(100)]), ...layerElems]));
+    objects.push(node("Geometry", [L(geoId), S(objName(mesh.name, "Geometry")), S("Mesh")], geoChildren));
     // Skinned mesh at the scene root with identity transform; the clusters
     // carry the bind. DefaultAttributeIndex=0 is REQUIRED: the SDK template
     // default (-1 = no active attribute) makes MoBu import a Null (verified).
@@ -327,6 +363,56 @@ export function writeAnimationFbx(clip: ResampledClip, opts: WriteAnimOpts = {})
     ]));
     meshConns.push({ kind: "OO", a: geoId, b: meshModelId });
     meshConns.push({ kind: "OO", a: meshModelId, b: 0 });
+
+    // Material + embedded base-color texture (Material → Model; Texture →
+    // Material.DiffuseColor; Video (with Content bytes) → Texture).
+    if (mesh.texture) {
+      const matId = id();
+      const texId = id();
+      const vidId = id();
+      const ext = mesh.texture.mime.includes("png") ? "png" : "jpg";
+      const fname = `${mesh.name}_diffuse.${ext}`;
+      objects.push(node("Material", [L(matId), S(objName(`${mesh.name}Mat`, "Material")), S("")], [
+        node("Version", [I(102)]),
+        node("ShadingModel", [S("phong")]),
+        node("MultiLayer", [I(0)]),
+        node("Properties70", [], [
+          P("DiffuseColor", S("Color"), S(""), S("A"), D(1), D(1), D(1)),
+          P("AmbientColor", S("Color"), S(""), S("A"), D(0.2), D(0.2), D(0.2)),
+          P("SpecularColor", S("Color"), S(""), S("A"), D(0), D(0), D(0)),
+          P("ShininessExponent", S("Number"), S(""), S("A"), D(2)),
+          P("Emissive", S("Vector3D"), S("Vector"), S(""), D(0), D(0), D(0)),
+        ]),
+      ]));
+      objects.push(node("Video", [L(vidId), S(objName(fname, "Video")), S("Clip")], [
+        node("Type", [S("Clip")]),
+        node("Properties70", [], [P("Path", S("KString"), S("XRefUrl"), S(""), S(fname))]),
+        node("UseMipMap", [I(0)]),
+        node("Filename", [S(fname)]),
+        node("RelativeFilename", [S(fname)]),
+        node("Content", [R(mesh.texture.bytes)]),
+      ]));
+      objects.push(node("Texture", [L(texId), S(objName(fname, "Texture")), S("")], [
+        node("Type", [S("TextureVideoClip")]),
+        node("Version", [I(202)]),
+        node("TextureName", [S(objName(fname, "Texture"))]),
+        node("Properties70", [], [
+          P("CurrentTextureBlendMode", S("enum"), S(""), S(""), I(0)),
+          P("UVSet", S("KString"), S(""), S(""), S("UVMap")),
+          P("UseMaterial", S("bool"), S(""), S(""), I(1)),
+        ]),
+        node("Media", [S(objName(fname, "Video"))]),
+        node("FileName", [S(fname)]),
+        node("RelativeFilename", [S(fname)]),
+        node("ModelUVTranslation", [D(0), D(0)]),
+        node("ModelUVScaling", [D(1), D(1)]),
+        node("Texture_Alpha_Source", [S("None")]),
+        node("Cropping", [I(0), I(0), I(0), I(0)]),
+      ]));
+      meshConns.push({ kind: "OO", a: matId, b: meshModelId });
+      meshConns.push({ kind: "OP", a: texId, b: matId, p: "DiffuseColor" });
+      meshConns.push({ kind: "OO", a: vidId, b: texId });
+    }
 
     // Skin deformer + one cluster per influencing bone. Bind matrices are
     // identity-rotation T-pose transforms (the same the BindPose carries).

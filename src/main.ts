@@ -69,6 +69,10 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
 
     <h3 class="section">Cleaning</h3>
     <label class="field">
+      <span>Limit wrists (human range)</span>
+      <input id="limitWrists" type="checkbox" checked />
+    </label>
+    <label class="field">
       <span>Remove pops / flips</span>
       <input id="despike" type="checkbox" />
     </label>
@@ -151,17 +155,22 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   const downloadBtn = document.getElementById("download") as HTMLButtonElement;
   const resetBtn = document.getElementById("reset") as HTMLButtonElement;
 
+  const limitWristsChk = document.getElementById("limitWrists") as HTMLInputElement;
   const cleanOpts = (): CleanOpts => ({
     despike: despikeChk.checked,
     despikeDeg: Number(despikeDeg.value),
     smooth: smoothChk.checked,
     cutoffHz: Number(cutoff.value),
+    limitWrists: limitWristsChk.checked,
   });
 
   async function reclean() {
     if (!loaded || !preview) return;
     const opts = cleanOpts();
-    let display = opts.despike || opts.smooth ? cleanClip(loaded.converted, opts) : loaded.converted;
+    let display =
+      opts.despike || opts.smooth || opts.limitWrists
+        ? cleanClip(loaded.converted, opts)
+        : loaded.converted;
     if (propSel.value === "body") {
       try {
         display = retargetProportions(
@@ -182,7 +191,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   cutoffVal.value = `${cutoff.value} Hz`;
   despikeDeg.addEventListener("input", () => { despikeVal.value = `${despikeDeg.value}°`; });
   cutoff.addEventListener("input", () => { cutoffVal.value = `${cutoff.value} Hz`; });
-  for (const c of [despikeChk, smoothChk]) c.addEventListener("change", () => void reclean());
+  for (const c of [despikeChk, smoothChk, limitWristsChk]) c.addEventListener("change", () => void reclean());
   for (const r of [despikeDeg, cutoff]) r.addEventListener("change", () => void reclean());
   propSel.addEventListener("change", () => void reclean());
 

@@ -32,6 +32,12 @@ export interface BodyMeshData {
   skinWeight: Float32Array;
   /** Morph channels matched to recorded blendshape names (deltas in meters). */
   channels?: { name: string; deltas: Float32Array }[];
+  /** Per-vertex UVs (2 per vertex), when the source mesh has them. */
+  uv?: Float32Array;
+  /** Source material's base-color texture for the preview, if any. */
+  map?: THREE.Texture | null;
+  /** Raw base-color image bytes (PNG/JPEG from the GLB) for FBX embedding. */
+  texture?: { bytes: Uint8Array; mime: string };
 }
 
 // Blender/Rigify-style names (Quaternius) ??? Unity HumanBodyBones names.
@@ -137,8 +143,35 @@ function modularToUnity(name: string): string | null {
 
 interface BodySource {
   scene: THREE.Object3D;
-  /** Explicit bone mapping (VRM humanoid): bone Object3D ??? Unity bone name. */
+  /** Explicit bone mapping (VRM humanoid): bone Object3D → Unity bone name. */
   boneUnity: Map<THREE.Object3D, string> | null;
+  /** Per-mesh base-color image bytes from the GLB (for FBX embedding). */
+  meshTexture: Map<THREE.Object3D, { bytes: Uint8Array; mime: string }> | null;
+}
+
+/**
+ * Pull each skinned mesh's base-color image bytes straight from the GLB BIN
+ * chunk (no canvas re-encode), via three's parser associations.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function extractGlbTextures(gltf: any, chunks: { json: any; bin: Uint8Array | null }): Map<THREE.Object3D, { bytes: Uint8Array; mime: string }> {
+  const out = new Map<THREE.Object3D, { bytes: Uint8Array; mime: string }>();
+  if (!chunks.bin) return out;
+  const json = chunks.json;
+  const assoc: Map<THREE.Object3D, { meshes?: number; primitives?: number }> = gltf.parser.associations;
+  assoc.forEach((v, obj) => {
+    if (v?.meshes === undefined || !(obj as THREE.SkinnedMesh).isSkinnedMesh) return;
+    const prim = json.meshes?.[v.meshes]?.primitives?.[v.primitives ?? 0];
+    const mat = json.materials?.[prim?.material];
+    const texIndex = mat?.pbrMetallicRoughness?.baseColorTexture?.index;
+    if (texIndex === undefined) return;
+    const img = json.images?.[json.textures?.[texIndex]?.source];
+    const bv = json.bufferViews?.[img?.bufferView];
+    if (!bv) return;
+    const bytes = chunks.bin!.subarray(bv.byteOffset ?? 0, (bv.byteOffset ?? 0) + bv.byteLength);
+    out.set(obj, { bytes, mime: img.mimeType ?? "image/png" });
+  });
+  return out;
 }
 
 let gltfCache: Promise<BodySource> | null = null;
@@ -151,7 +184,7 @@ function loadBundledGltf(): Promise<BodySource> {
   // ?v= busts the Pages/browser cache ??? bump when swapping the bundled asset.
   gltfCache = loader
     .loadAsync(`${import.meta.env.BASE_URL}body.glb?v=xbot1`)
-    .then((g) => ({ scene: g.scene, boneUnity: null }));
+    .then((g) => ({ scene: g.scene, boneUnity: null, meshTexture: null }));
   return gltfCache;
 }
 
@@ -188,14 +221,16 @@ export async function setBodySource(buffer: ArrayBuffer | null): Promise<number>
     bodyCache = null;
     return 0;
   }
-  const { sanitizeGlb, parseVrmHumanoid } = await import("../vrm/vrmHumanoid.ts");
+  const { sanitizeGlb, parseVrmHumanoid, parseGlbChunks } = await import("../vrm/vrmHumanoid.ts");
   const clean = sanitizeGlb(buffer);
   const nodeMap = parseVrmHumanoid(clean);
   const loader = new GLTFLoader();
   loader.setMeshoptDecoder(MeshoptDecoder);
   const gltf = await loader.parseAsync(clean, "");
   const boneUnity = nodeMap ? boneUnityFromAssociations(gltf, nodeMap) : null;
-  userSource = { scene: gltf.scene, boneUnity };
+  const chunks = parseGlbChunks(clean);
+  const meshTexture = chunks ? extractGlbTextures(gltf, chunks) : null;
+  userSource = { scene: gltf.scene, boneUnity, meshTexture };
   bodyCache = null;
   return boneUnity?.size ?? 0;
 }
@@ -225,6 +260,7 @@ export function buildBodyData(
       // its morphs are matched to the recorded blendshape names.
       keepHead: userSource !== null,
       morphNames,
+      textures: src.meshTexture ?? undefined,
     }),
   );
   bodyCache = { key, data };
@@ -238,7 +274,11 @@ export function extractBodyMeshes(
   bindPos: Vec3[],
   unityNames: string[],
   boneUnity?: Map<THREE.Object3D, string>,
-  opts: { keepHead?: boolean; morphNames?: string[] } = {},
+  opts: {
+    keepHead?: boolean;
+    morphNames?: string[];
+    textures?: Map<THREE.Object3D, { bytes: Uint8Array; mime: string }>;
+  } = {},
 ): BodyExtract {
   scene.updateWorldMatrix(true, true);
   const ourWorld = bindWorldPositions(parents, bindPos);
@@ -652,12 +692,18 @@ export function extractBodyMeshes(
     const positions = new Float32Array(next * 3);
     const skinIndex = new Uint16Array(next * 4);
     const skinWeight = new Float32Array(next * 4);
+    const uvAttr = geo.getAttribute("uv");
+    const uv = uvAttr ? new Float32Array(next * 2) : undefined;
     for (let i = 0; i < count; i++) {
       const r = remap[i];
       if (r < 0) continue;
       positions.set(outPos.subarray(i * 3, i * 3 + 3), r * 3);
       skinIndex.set(outIdx.subarray(i * 4, i * 4 + 4), r * 4);
       skinWeight.set(outWgt.subarray(i * 4, i * 4 + 4), r * 4);
+      if (uv && uvAttr) {
+        uv[r * 2] = uvAttr.getX(i);
+        uv[r * 2 + 1] = uvAttr.getY(i);
+      }
     }
     const indices = new Uint32Array(keptTris.length);
     for (let t = 0; t < keptTris.length; t++) indices[t] = remap[keptTris[t]];
@@ -701,6 +747,9 @@ export function extractBodyMeshes(
       if (channels.length === 0) channels = undefined;
     }
 
+    const srcMaterial = (Array.isArray(m.material) ? m.material[0] : m.material) as
+      | (THREE.Material & { map?: THREE.Texture | null })
+      | undefined;
     meshes.push({
       name: meshes.length === 0 ? "Body" : `Body${meshes.length + 1}`,
       positions,
@@ -709,6 +758,9 @@ export function extractBodyMeshes(
       skinIndex,
       skinWeight,
       channels,
+      uv,
+      map: srcMaterial?.map ?? null,
+      texture: opts.textures?.get(m),
     });
   }
 
@@ -764,7 +816,26 @@ export function bodyToSkinnedMeshExports(
       if (channels.length === 0) channels = undefined;
     }
 
-    return { name: m.name, positions, normals, indices: m.indices, clusters, channels };
+    // UVs: glTF puts (0,0) top-left; FBX texture space is bottom-left → flip V.
+    let uv: Float64Array | undefined;
+    if (m.uv && m.texture) {
+      uv = new Float64Array(m.uv.length);
+      for (let i = 0; i < m.uv.length; i += 2) {
+        uv[i] = m.uv[i];
+        uv[i + 1] = 1 - m.uv[i + 1];
+      }
+    }
+
+    return {
+      name: m.name,
+      positions,
+      normals,
+      indices: m.indices,
+      clusters,
+      channels,
+      uv,
+      texture: m.texture,
+    };
   });
 }
 

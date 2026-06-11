@@ -3,6 +3,17 @@
 // Usage: node scripts/faceFbxCheck.mjs <file.wanim> [out.fbx]
 import { readFileSync, writeFileSync } from "node:fs";
 globalThis.self = globalThis;
+globalThis.window = globalThis; // FBXLoader.parseImage needs window.URL (embedded textures)
+// ImageLoader wants a DOM <img>; a fake element that fires 'load' immediately
+// lets parsing proceed (we assert structure, not pixel decode).
+globalThis.document = {
+  createElementNS: () => ({
+    listeners: {},
+    addEventListener(type, fn) { if (type === "load") setTimeout(fn, 0); },
+    removeEventListener() {},
+    set src(_v) {},
+  }),
+};
 const THREE = await import("three");
 const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
 const { MeshoptDecoder } = await import("three/examples/jsm/libs/meshopt_decoder.module.js");
@@ -59,9 +70,10 @@ const buf = readFileSync(process.argv[2] ?? "C:\\Users\\VTOKU\\Downloads\\All-Th
 const clip = parseWanim(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
 let converted = convertCharacter(clip, 0);
 let bodyGltfEarly, bodyBoneUnity;
+let bodyTextures;
 if (process.env.WANIM_BODY_FILE) {
-  const { sanitizeGlb, parseVrmHumanoid } = await import("../src/vrm/vrmHumanoid.ts");
-  const { boneUnityFromAssociations } = await import("../src/convert/body.ts");
+  const { sanitizeGlb, parseVrmHumanoid, parseGlbChunks } = await import("../src/vrm/vrmHumanoid.ts");
+  const { boneUnityFromAssociations, extractGlbTextures } = await import("../src/convert/body.ts");
   const raw = readFileSync(process.env.WANIM_BODY_FILE);
   const clean = sanitizeGlb(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength));
   const nodeMap = parseVrmHumanoid(clean);
@@ -69,7 +81,10 @@ if (process.env.WANIM_BODY_FILE) {
   loader2.setMeshoptDecoder(MeshoptDecoder);
   bodyGltfEarly = await loader2.parseAsync(clean, "");
   bodyBoneUnity = nodeMap ? boneUnityFromAssociations(bodyGltfEarly, nodeMap) : undefined;
-  console.log("body source:", process.env.WANIM_BODY_FILE.split("\\").pop(), "humanoid bones:", bodyBoneUnity?.size ?? 0);
+  const chunks = parseGlbChunks(clean);
+  bodyTextures = chunks ? extractGlbTextures(bodyGltfEarly, chunks) : undefined;
+  console.log("body source:", process.env.WANIM_BODY_FILE.split("\\").pop(),
+    "humanoid bones:", bodyBoneUnity?.size ?? 0, "textured meshes:", bodyTextures?.size ?? 0);
 } else {
   bodyGltfEarly = await loadGlb("public/body.glb");
 }
@@ -87,6 +102,7 @@ const augFace = resampled.face ? augmentFaceForVrm(resampled.face) : undefined;
 const bodyData = extractBodyMeshes(bodyGltfEarly.scene, resampled.parents, resampled.bindPos, resampled.names, bodyBoneUnity, {
   keepHead: !!process.env.WANIM_BODY_FILE,
   morphNames: process.env.WANIM_BODY_FILE ? augFace?.names : undefined,
+  textures: bodyTextures,
 }).meshes;
 console.log("body meshes:", bodyData.map((m) => `${m.name}(${m.positions.length / 3}v ${m.indices.length / 3}t${m.channels ? ` ${m.channels.length}ch` : ""})`).join(", "));
 meshes.push(...bodyToSkinnedMeshExports(bodyData, augFace));

@@ -1,7 +1,7 @@
 {
   "name": "wanim-to-fbx",
   "private": true,
-  "version": "0.13.0",
+  "version": "0.14.0",
   "type": "module",
   "description": "Browser-based Warudo .wanim to FBX animation converter. Runs entirely client-side.",
   "license": "MIT",
@@ -12,6 +12,7 @@
     "smoke": "node --experimental-strip-types scripts/wanimSmoke.ts",
     "fbxcheck": "node scripts/fbxLoadCheck.mjs",
     "faceFbxCheck": "node scripts/faceFbxCheck.mjs",
+    "cleanCheck": "node scripts/cleanCheck.mjs",
     "drive": "node scripts/driveApp.mjs"
   },
   "dependencies": {

@@ -16,10 +16,12 @@ export function buildBodyMeshes(
     (t) => new THREE.Matrix4().makeTranslation(-t[0], -t[1], -t[2]),
   );
   const group = new THREE.Group();
-  const material = new THREE.MeshStandardMaterial({
+  // DoubleSide: VRM skirts/hair are single-sided planes (holes otherwise).
+  const fallback = new THREE.MeshStandardMaterial({
     color: 0x8d97a5,
     roughness: 0.8,
     metalness: 0.05,
+    side: THREE.DoubleSide,
   });
 
   for (const m of data) {
@@ -29,7 +31,18 @@ export function buildBodyMeshes(
     geo.setAttribute("skinIndex", new THREE.Uint16BufferAttribute(m.skinIndex, 4));
     geo.setAttribute("skinWeight", new THREE.Float32BufferAttribute(m.skinWeight, 4));
     geo.setIndex(new THREE.Uint32BufferAttribute(m.indices, 1));
+    if (m.uv) geo.setAttribute("uv", new THREE.Float32BufferAttribute(m.uv, 2));
 
+    // Textured material when the source mesh had one (user VRMs).
+    const material = m.map
+      ? new THREE.MeshStandardMaterial({
+          map: m.map,
+          roughness: 0.9,
+          metalness: 0,
+          side: THREE.DoubleSide,
+          alphaTest: 0.4,
+        })
+      : fallback;
     const mesh = new THREE.SkinnedMesh(geo, material);
 
     // Morph channels (named with the RECORDED blendshape names) so the
