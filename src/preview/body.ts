@@ -31,6 +31,22 @@ export function buildBodyMeshes(
     geo.setIndex(new THREE.Uint32BufferAttribute(m.indices, 1));
 
     const mesh = new THREE.SkinnedMesh(geo, material);
+
+    // Morph channels (named with the RECORDED blendshape names) so the
+    // preview can drive a user VRM's own face.
+    if (m.channels?.length) {
+      geo.morphAttributes.position = m.channels.map(
+        (ch) => new THREE.Float32BufferAttribute(ch.deltas, 3),
+      );
+      geo.morphTargetsRelative = true;
+      mesh.morphTargetDictionary = {};
+      mesh.morphTargetInfluences = [];
+      m.channels.forEach((ch, i) => {
+        mesh.morphTargetDictionary![ch.name] = i;
+        mesh.morphTargetInfluences!.push(0);
+      });
+    }
+
     mesh.frustumCulled = false;
     const skeleton = new THREE.Skeleton(bones, boneInverses);
     mesh.bind(skeleton, new THREE.Matrix4());

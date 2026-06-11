@@ -82,11 +82,14 @@ const resampled = resample(converted, 30);
 
 // --- meshes --- (a user VRM keeps its own head, so no facecap Face mesh)
 const meshes = process.env.WANIM_BODY_FILE ? [] : [buildFaceMesh(resampled, faceData)];
+const { augmentFaceForVrm } = await import("../src/convert/vrmFaceMap.ts");
+const augFace = resampled.face ? augmentFaceForVrm(resampled.face) : undefined;
 const bodyData = extractBodyMeshes(bodyGltfEarly.scene, resampled.parents, resampled.bindPos, resampled.names, bodyBoneUnity, {
   keepHead: !!process.env.WANIM_BODY_FILE,
+  morphNames: process.env.WANIM_BODY_FILE ? augFace?.names : undefined,
 }).meshes;
-console.log("body meshes:", bodyData.map((m) => `${m.name}(${m.positions.length / 3}v ${m.indices.length / 3}t)`).join(", "));
-meshes.push(...bodyToSkinnedMeshExports(bodyData));
+console.log("body meshes:", bodyData.map((m) => `${m.name}(${m.positions.length / 3}v ${m.indices.length / 3}t${m.channels ? ` ${m.channels.length}ch` : ""})`).join(", "));
+meshes.push(...bodyToSkinnedMeshExports(bodyData, augFace));
 if (!process.env.WANIM_BODY_FILE) console.log("face channels:", meshes[0].channels.length);
 
 const fbx = writeAnimationFbx(resampled, { takeName: "Take 001", tposeRest: true, meshes });

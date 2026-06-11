@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { bindWorldPositions, type ConvertedClip } from "../convert/clip.ts";
 import { buildBodyData } from "../convert/body.ts";
+import { augmentFaceForVrm } from "../convert/vrmFaceMap.ts";
 import { buildBodyMeshes } from "./body.ts";
 
 export type BodyMode = "human" | "none";
@@ -42,6 +43,8 @@ export class PreviewScene {
   private face: FaceOverlay | null = null;
   private headIndex = -1;
   private faceWeights: Float32Array | null = null;
+  private bodyFace: { names: string[]; tracks: Float32Array[] } | null = null;
+  private bodyFaceWeights: Float32Array | null = null;
 
   private time = 0;
   private playing = false;
@@ -125,11 +128,14 @@ export class PreviewScene {
     if (this.bodyMode === "none") return;
     const bindWorld = bindWorldPositions(clip.parents, clip.bindPos);
     const root = this.boneRoot;
-    void buildBodyData(clip.parents, clip.bindPos, clip.names)
+    const augFace = clip.face ? augmentFaceForVrm(clip.face) : null;
+    void buildBodyData(clip.parents, clip.bindPos, clip.names, augFace?.names)
       .then((data) => {
         // The clip/mode may have changed while loading.
         if (this.clip !== clip || this.boneRoot !== root || !root || this.bodyMode !== "human") return;
         this.clearBody();
+        this.bodyFace = augFace;
+        this.bodyFaceWeights = augFace ? new Float32Array(augFace.names.length) : null;
         this.body = buildBodyMeshes(data.meshes, this.boneNodes, bindWorld);
         // At the scene root: the bones' world matrices already include any
         // root transform, so the skinned mesh must not inherit it too.
@@ -218,7 +224,9 @@ export class PreviewScene {
     this.joints.frustumCulled = false;
     this.scene.add(this.joints);
 
-    this.faceWeights = null;
+    // Allocated whenever the clip has face tracks (drives the overlay AND
+    // any body-mesh morphs), even if the overlay itself failed to load.
+    this.faceWeights = clip.face ? new Float32Array(clip.face.names.length) : null;
     this.attachFace();
     this.attachBody(clip);
 
@@ -301,7 +309,7 @@ export class PreviewScene {
     jointPos.needsUpdate = true;
 
     // Drive the face blendshapes from the recorded weights at this time.
-    if (this.face && this.faceWeights && this.clip?.face) {
+    if (this.faceWeights && this.clip?.face) {
       const { i, frac } = this.locate(time);
       const tracks = this.clip.face.tracks;
       for (let n = 0; n < tracks.length; n++) {
@@ -309,7 +317,25 @@ export class PreviewScene {
         const b = tracks[n][i + 1] ?? a;
         this.faceWeights[n] = a + (b - a) * frac;
       }
-      this.face.applyWeights(this.faceWeights);
+      this.face?.applyWeights(this.faceWeights);
+      // A user VRM's body meshes carry morphs named with the (augmented)
+      // recorded names — drive them from the augmented tracks.
+      if (this.body && this.bodyFace && this.bodyFaceWeights) {
+        const bf = this.bodyFace;
+        for (let n = 0; n < bf.tracks.length; n++) {
+          const a = bf.tracks[n][i];
+          const b = bf.tracks[n][i + 1] ?? a;
+          this.bodyFaceWeights[n] = a + (b - a) * frac;
+        }
+        this.body.traverse((o) => {
+          const sm = o as THREE.SkinnedMesh;
+          if (!sm.isSkinnedMesh || !sm.morphTargetDictionary || !sm.morphTargetInfluences) return;
+          for (let n = 0; n < bf.names.length; n++) {
+            const mi = sm.morphTargetDictionary[bf.names[n]];
+            if (mi !== undefined) sm.morphTargetInfluences[mi] = this.bodyFaceWeights![n];
+          }
+        });
+      }
     }
   }
 

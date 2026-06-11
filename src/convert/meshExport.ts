@@ -4,13 +4,11 @@ import type { SkinnedMeshExport } from "../fbx/animationFbx.ts";
 import type { FaceMeshData } from "../preview/face.ts";
 import { toFacecapName } from "../preview/face.ts";
 
-// Measured from the bundled body's original head mesh
-// (scripts/measureBodyHead.mjs against public/body.glb): 28.5cm tall,
-// centered 11.5cm above the Head joint, at a 1.512m head-joint height.
-// The facecap head is sized proportionally to the skeleton's actual head
-// height so it matches the body's own head 1:1 in body-proportions mode.
-export const BODY_HEAD_HEIGHT_M = 0.267;
-export const BODY_HEAD_LIFT_M = 0.076;
+// Base: measured Xbot head (scripts/measureBodyHead.mjs): 0.267m tall,
+// center +0.076m above the Head joint at 1.596m. Nudged per user feedback
+// ("a bit too small and up too high"): ~10% larger, seated lower.
+export const BODY_HEAD_HEIGHT_M = 0.295;
+export const BODY_HEAD_LIFT_M = 0.045;
 export const BODY_HEAD_JOINT_Y = 1.596;
 
 /**

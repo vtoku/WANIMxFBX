@@ -30,6 +30,8 @@ export interface BodyMeshData {
   /** Per-vertex 4 influences: OUR bone indices + weights. */
   skinIndex: Uint16Array;
   skinWeight: Float32Array;
+  /** Morph channels matched to recorded blendshape names (deltas in meters). */
+  channels?: { name: string; deltas: Float32Array }[];
 }
 
 // Blender/Rigify-style names (Quaternius) ??? Unity HumanBodyBones names.
@@ -92,8 +94,8 @@ function normalizeBoneName(raw: string): string {
   return raw.replace(/^mixamorig:?/, "").replace(/^DEF-/, "").replace(/[. ]/g, "");
 }
 
-// Quaternius "modular" rig names (UpperArmL, WristR, Abdomen, Torso, Index1L…)
-// → Unity HumanBodyBones names.
+// Quaternius "modular" rig names (UpperArmL, WristR, Abdomen, Torso, Index1L???)
+// ??? Unity HumanBodyBones names.
 const MODULAR_BASE: Record<string, string> = {
   Hips: "Hips",
   Abdomen: "Spine",
@@ -135,7 +137,7 @@ function modularToUnity(name: string): string | null {
 
 interface BodySource {
   scene: THREE.Object3D;
-  /** Explicit bone mapping (VRM humanoid): bone Object3D → Unity bone name. */
+  /** Explicit bone mapping (VRM humanoid): bone Object3D ??? Unity bone name. */
   boneUnity: Map<THREE.Object3D, string> | null;
 }
 
@@ -146,7 +148,7 @@ function loadBundledGltf(): Promise<BodySource> {
   if (gltfCache) return gltfCache;
   const loader = new GLTFLoader();
   loader.setMeshoptDecoder(MeshoptDecoder);
-  // ?v= busts the Pages/browser cache — bump when swapping the bundled asset.
+  // ?v= busts the Pages/browser cache ??? bump when swapping the bundled asset.
   gltfCache = loader
     .loadAsync(`${import.meta.env.BASE_URL}body.glb?v=xbot1`)
     .then((g) => ({ scene: g.scene, boneUnity: null }));
@@ -157,7 +159,7 @@ function getActiveSource(): Promise<BodySource> {
   return userSource ? Promise.resolve(userSource) : loadBundledGltf();
 }
 
-/** Build a Object3D→Unity map from a parsed GLTF + a node-index humanoid map. */
+/** Build a Object3D???Unity map from a parsed GLTF + a node-index humanoid map. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function boneUnityFromAssociations(gltf: any, nodeMap: Map<number, string>): Map<THREE.Object3D, string> {
   const out = new Map<THREE.Object3D, string>();
@@ -211,13 +213,18 @@ export function buildBodyData(
   parents: number[],
   bindPos: Vec3[],
   unityNames: string[],
+  morphNames?: string[],
 ): Promise<BodyExtract> {
-  const key = bindPos.map((p) => p.map((v) => v.toFixed(4)).join(",")).join(";");
+  const key =
+    bindPos.map((p) => p.map((v) => v.toFixed(4)).join(",")).join(";") +
+    `|m${morphNames?.length ?? 0}`;
   if (bodyCache?.key === key) return bodyCache.data;
   const data = getActiveSource().then((src) =>
     extractBodyMeshes(src.scene, parents, bindPos, unityNames, src.boneUnity ?? undefined, {
-      // A user's VRM keeps its own head/hair; the facecap Face is suppressed.
+      // A user's VRM keeps its own head/hair (facecap Face suppressed) and
+      // its morphs are matched to the recorded blendshape names.
       keepHead: userSource !== null,
+      morphNames,
     }),
   );
   bodyCache = { key, data };
@@ -231,7 +238,7 @@ export function extractBodyMeshes(
   bindPos: Vec3[],
   unityNames: string[],
   boneUnity?: Map<THREE.Object3D, string>,
-  opts: { keepHead?: boolean } = {},
+  opts: { keepHead?: boolean; morphNames?: string[] } = {},
 ): BodyExtract {
   scene.updateWorldMatrix(true, true);
   const ourWorld = bindWorldPositions(parents, bindPos);
@@ -249,7 +256,7 @@ export function extractBodyMeshes(
     if (m.isSkinnedMesh) skinnedMeshes.push(m);
   });
   if (skinnedMeshes.length === 0) return { meshes: [], joints: unityNames.map(() => null) };
-  // UNION of all skeletons' bones — VRMs often bind body and hair/clothing
+  // UNION of all skeletons' bones ??? VRMs often bind body and hair/clothing
   // meshes to DIFFERENT Skeleton objects; resolving every mesh's skin indices
   // against the first skeleton shreds the others (hair ribbons).
   const allBones: THREE.Bone[] = [];
@@ -267,7 +274,7 @@ export function extractBodyMeshes(
     sm.skeleton.bones.map((b) => unionIndex.get(b) ?? -1);
 
   // Capture the REST state in plain world space, using the asset's OWN
-  // skinning for the rest shape (whatever its bind convention — 2017-era
+  // skinning for the rest shape (whatever its bind convention ??? 2017-era
   // Quaternius and some Blender exports ship degenerate inverse binds, so we
   // never rely on them after this point).
   for (const m of skinnedMeshes) m.skeleton.update();
@@ -317,7 +324,7 @@ export function extractBodyMeshes(
     });
   }
 
-  // Resolve a source bone → our index: explicit humanoid map (VRM) first,
+  // Resolve a source bone ??? our index: explicit humanoid map (VRM) first,
   // then all known naming families.
   const resolveBone = (obj: THREE.Object3D): number | undefined => {
     const explicit = boneUnity?.get(obj);
@@ -329,7 +336,7 @@ export function extractBodyMeshes(
       nameToIndex.get(modularToUnity(n) ?? "")
     );
   };
-  // Source bone → our bone (walk up through unmapped helpers like HeadTop_End).
+  // Source bone ??? our bone (walk up through unmapped helpers like HeadTop_End).
   const boneOurIndex = skeleton.bones.map((b) => {
     let cur: THREE.Object3D | null = b;
     while (cur) {
@@ -346,10 +353,19 @@ export function extractBodyMeshes(
   const boneIsHead = boneOurIndex.map((i) => i === headIdx || eyeIdx.includes(i));
 
   // Our skeleton's children + segment axes (T-pose).
-  const ourChildren: number[][] = unityNames.map(() => []);
+  const ourChildrenAll: number[][] = unityNames.map(() => []);
   parents.forEach((p, i) => {
-    if (p >= 0) ourChildren[p].push(i);
+    if (p >= 0) ourChildrenAll[p].push(i);
   });
+  // The HIPS axis uses the Spine child ONLY: the mean over spine+both legs is
+  // near-degenerate and differs between skeletons, so the alignment rotation
+  // can flip the pelvis (seen as "hips facing the wrong way" in recorded-
+  // proportions mode).
+  const spineIdx = unityNames.indexOf("Spine");
+  const hipsIdx = unityNames.indexOf("Hips");
+  const ourChildren: number[][] = ourChildrenAll.map((kids, m) =>
+    m === hipsIdx && kids.includes(spineIdx) ? [spineIdx] : kids,
+  );
   const ourAxis: (THREE.Vector3 | null)[] = unityNames.map((_, m) => {
     const dir = new THREE.Vector3();
     for (const c of ourChildren[m]) {
@@ -369,7 +385,7 @@ export function extractBodyMeshes(
     return dir.lengthSq() > 1e-8 ? dir.normalize() : null;
   });
 
-  // --- 2+3. Closed-form world-space delta per bone (NO scene-graph edits —
+  // --- 2+3. Closed-form world-space delta per bone (NO scene-graph edits ???
   // hierarchy mutation with non-uniform scales shears across rig conventions):
   //   D_j = T(ourJoint_m) . Stretch(ourAxis_m, r_j) . R(G.restDir_j -> ourAxis_m) . G . T(-restJoint_j)
   // where G is a global yaw turning the rest pose to face +Z.
@@ -382,7 +398,7 @@ export function extractBodyMeshes(
     let used = 0;
     for (const c of childBones(b)) {
       const cj = skeleton.bones.indexOf(c);
-      if (cj < 0 || !directlyMapped[cj] || boneOurIndex[cj] === boneOurIndex[j]) continue;
+      if (cj < 0 || !directlyMapped[cj] || boneOurIndex[cj] === boneOurIndex[j]) continue; if (boneOurIndex[j] === hipsIdx && boneOurIndex[cj] !== spineIdx) continue;
       dir.add(restJoint[cj].clone().sub(restJoint[j]));
       used++;
     }
@@ -397,7 +413,7 @@ export function extractBodyMeshes(
     const ls: number[] = [];
     for (const c of childBones(b)) {
       const cj = skeleton.bones.indexOf(c);
-      if (cj < 0 || !directlyMapped[cj] || boneOurIndex[cj] === boneOurIndex[j]) continue;
+      if (cj < 0 || !directlyMapped[cj] || boneOurIndex[cj] === boneOurIndex[j]) continue; if (boneOurIndex[j] === hipsIdx && boneOurIndex[cj] !== spineIdx) continue;
       ls.push(restJoint[cj].distanceTo(restJoint[j]));
     }
     if (ls.length === 0 && b.parent && (b.parent as THREE.Bone).isBone) {
@@ -438,7 +454,7 @@ export function extractBodyMeshes(
 
   // T-pose the JOINT TABLE (pure vector math): walk parents-first accumulating
   // per-chain rotations that take each segment to its canonical T-pose
-  // direction (arms ±X, spine +Y, legs −Y, feet keep pitch but head +Z).
+  // direction (arms ??X, spine +Y, legs ???Y, feet keep pitch but head +Z).
   // Without this, A-pose rests would become the exported bind layout and the
   // T-pose rest/HIK characterization would be wrong.
   const canonicalAxis = (unityName: string, cur: THREE.Vector3): THREE.Vector3 | null => {
@@ -484,7 +500,7 @@ export function extractBodyMeshes(
     let used = 0;
     for (const c of childBones(b)) {
       const cj = skeleton.bones.indexOf(c);
-      if (cj < 0 || !directlyMapped[cj] || boneOurIndex[cj] === boneOurIndex[j]) continue;
+      if (cj < 0 || !directlyMapped[cj] || boneOurIndex[cj] === boneOurIndex[j]) continue; if (boneOurIndex[j] === hipsIdx && boneOurIndex[cj] !== spineIdx) continue;
       cur.add(yawedJoint[cj].clone().sub(yawedJoint[j]).applyQuaternion(chainRot[j]));
       used++;
     }
@@ -519,12 +535,15 @@ export function extractBodyMeshes(
     D.premultiply(G);
     const dst = ourAxis[m];
     const dir = yawedDir[j];
+    // Head/eyes transfer RIGIDLY (no axial stretch) ??? a head should keep its
+    // authored scale (a VRM head was visibly shrunk by the eye-segment ratio).
+    const rigid = /Head|Eye/.test(unityNames[m]);
     if (dst && dir) {
       const q = new THREE.Quaternion().setFromUnitVectors(dir, dst);
       D.premultiply(new THREE.Matrix4().makeRotationFromQuaternion(q));
       let oLen = mean(ourChildren[m].map((cm) => segLen(ourWorld[m], ourWorld[cm])));
       if (oLen < 1e-4 && parents[m] >= 0) oLen = segLen(ourWorld[parents[m]], ourWorld[m]);
-      if (oLen > 1e-4 && restLen[j] > 1e-4) {
+      if (!rigid && oLen > 1e-4 && restLen[j] > 1e-4) {
         const r = Math.min(4, Math.max(0.1, oLen / restLen[j]));
         D.premultiply(stretchAlong(dst, r));
       }
@@ -533,7 +552,7 @@ export function extractBodyMeshes(
     return D;
   });
   // Unmapped helper bones (VRM hair/skirt spring chains, finger tips,
-  // HeadTop_End…) ride RIGIDLY with their nearest mapped ancestor — giving
+  // HeadTop_End???) ride RIGIDLY with their nearest mapped ancestor ??? giving
   // them their own rotation deltas shreds hair into ribbons.
   skeleton.bones.forEach((b, j) => {
     if (boneDelta[j]) return;
@@ -557,7 +576,7 @@ export function extractBodyMeshes(
   for (let mi2 = 0; mi2 < skinnedMeshes.length; mi2++) {
     const m = skinnedMeshes[mi2];
     // Modular packs ship the swappable head as separate sub-meshes (incl.
-    // earrings/glasses) — skip the whole section; the Face mesh replaces it.
+    // earrings/glasses) ??? skip the whole section; the Face mesh replaces it.
     if (!opts.keepHead && /(^|_)(Head|Ears?)(_|$)/i.test(m.name)) continue;
     const rest = restWorldVerts[mi2];
     const geo = m.geometry;
@@ -573,6 +592,12 @@ export function extractBodyMeshes(
     const v = new THREE.Vector3();
     const acc = new THREE.Vector3();
     const l2u = localToUnion(m);
+    const morphDict = (m as THREE.SkinnedMesh & { morphTargetDictionary?: Record<string, number> })
+      .morphTargetDictionary;
+    const wantMorphs = !!(opts.keepHead && opts.morphNames?.length && morphDict);
+    // Per-vertex blended LINEAR part of the deltas (column-major 3??3), needed
+    // to carry morph delta vectors through the same transfer as positions.
+    const linAcc = wantMorphs ? new Float32Array(count * 9) : null;
 
     for (let i = 0; i < count; i++) {
       acc.set(0, 0, 0);
@@ -587,6 +612,13 @@ export function extractBodyMeshes(
         outIdx[i * 4 + k] = boneOurIndex[j];
         outWgt[i * 4 + k] = w;
         if (boneIsHead[j]) headWeight[i] += w;
+        if (linAcc) {
+          const e = boneDelta[j]!.elements;
+          const o = i * 9;
+          linAcc[o] += w * e[0]; linAcc[o + 1] += w * e[1]; linAcc[o + 2] += w * e[2];
+          linAcc[o + 3] += w * e[4]; linAcc[o + 4] += w * e[5]; linAcc[o + 5] += w * e[6];
+          linAcc[o + 6] += w * e[8]; linAcc[o + 7] += w * e[9]; linAcc[o + 8] += w * e[10];
+        }
       }
       if (wsum > 1e-6) acc.multiplyScalar(1 / wsum);
       else acc.set(rest[i * 3], rest[i * 3 + 1], rest[i * 3 + 2]);
@@ -602,8 +634,10 @@ export function extractBodyMeshes(
       ? (geo.index.array as ArrayLike<number>)
       : Array.from({ length: count }, (_, i) => i);
     const keptTris: number[] = [];
-    const aboveCut = (vi: number) =>
-      !opts.keepHead && headWeight[vi] > 0.5 && outPos[vi * 3 + 1] > cutY;
+    // Weight-only cut: a positional condition keeps the jaw/chin (head-
+    // weighted but below the head joint) poking out under the Face mesh.
+    void cutY;
+    const aboveCut = (vi: number) => !opts.keepHead && headWeight[vi] > 0.5;
     for (let t = 0; t < srcIndices.length; t += 3) {
       const a = srcIndices[t], b2 = srcIndices[t + 1], c2 = srcIndices[t + 2];
       // Drop tris touching ANY removed head vert - keeping boundary-crossing
@@ -636,6 +670,37 @@ export function extractBodyMeshes(
     const normals = new Float32Array(tmpGeo.getAttribute("normal").array as ArrayLike<number>);
     tmpGeo.dispose();
 
+    // Morph channels: match the recorded blendshape names to this mesh's
+    // morph targets (case-insensitive) and carry the deltas through the same
+    // per-vertex linear transform as the positions.
+    let channels: { name: string; deltas: Float32Array }[] | undefined;
+    if (linAcc && morphDict) {
+      const meshLin = new THREE.Matrix3().setFromMatrix4(m.matrixWorld);
+      const dictLower = new Map(Object.keys(morphDict).map((k2) => [k2.toLowerCase(), k2]));
+      channels = [];
+      for (const recName of opts.morphNames!) {
+        const key = dictLower.get(recName.toLowerCase());
+        if (key === undefined) continue;
+        const attr = geo.morphAttributes.position?.[morphDict[key]];
+        if (!attr) continue;
+        const deltas = new Float32Array(next * 3);
+        let moved = 0;
+        for (let i = 0; i < count; i++) {
+          const r = remap[i];
+          if (r < 0) continue;
+          v.fromBufferAttribute(attr, i).applyMatrix3(meshLin);
+          const o = i * 9;
+          const dx = linAcc[o] * v.x + linAcc[o + 3] * v.y + linAcc[o + 6] * v.z;
+          const dy = linAcc[o + 1] * v.x + linAcc[o + 4] * v.y + linAcc[o + 7] * v.z;
+          const dz = linAcc[o + 2] * v.x + linAcc[o + 5] * v.y + linAcc[o + 8] * v.z;
+          deltas[r * 3] = dx; deltas[r * 3 + 1] = dy; deltas[r * 3 + 2] = dz;
+          moved = Math.max(moved, Math.abs(dx), Math.abs(dy), Math.abs(dz));
+        }
+        if (moved > 1e-6) channels.push({ name: recName, deltas });
+      }
+      if (channels.length === 0) channels = undefined;
+    }
+
     meshes.push({
       name: meshes.length === 0 ? "Body" : `Body${meshes.length + 1}`,
       positions,
@@ -643,6 +708,7 @@ export function extractBodyMeshes(
       indices,
       skinIndex,
       skinWeight,
+      channels,
     });
   }
 
@@ -651,7 +717,10 @@ export function extractBodyMeshes(
 
 
 /** Convert preview-space body data (meters) into FBX skinned-mesh exports (cm). */
-export function bodyToSkinnedMeshExports(meshes: BodyMeshData[]): SkinnedMeshExport[] {
+export function bodyToSkinnedMeshExports(
+  meshes: BodyMeshData[],
+  face?: { names: string[]; tracks: Float32Array[] },
+): SkinnedMeshExport[] {
   return meshes.map((m) => {
     const positions = new Float64Array(m.positions.length);
     for (let i = 0; i < m.positions.length; i++) positions[i] = m.positions[i] * 100;
@@ -677,7 +746,25 @@ export function bodyToSkinnedMeshExports(meshes: BodyMeshData[]): SkinnedMeshExp
       weights: Float64Array.from(perVert.values()),
     }));
 
-    return { name: m.name, positions, normals, indices: m.indices, clusters };
+    // Morph channels: deltas to cm, paired with the recorded weight tracks.
+    let channels: SkinnedMeshExport["channels"];
+    if (m.channels && face) {
+      channels = [];
+      for (const ch of m.channels) {
+        const n = face.names.indexOf(ch.name);
+        if (n < 0) continue;
+        const weights = face.tracks[n];
+        let moved = 0;
+        for (let i = 0; i < weights.length; i++) moved = Math.max(moved, Math.abs(weights[i]));
+        if (moved < 0.01) continue;
+        const deltas = new Float64Array(ch.deltas.length);
+        for (let i = 0; i < ch.deltas.length; i++) deltas[i] = ch.deltas[i] * 100;
+        channels.push({ name: ch.name, deltas, weights });
+      }
+      if (channels.length === 0) channels = undefined;
+    }
+
+    return { name: m.name, positions, normals, indices: m.indices, clusters, channels };
   });
 }
 

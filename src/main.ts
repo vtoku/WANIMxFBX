@@ -6,6 +6,7 @@ import { writeAnimationFbx, type SkinnedMeshExport } from "./fbx/animationFbx.ts
 import { remapNames, type NameScheme } from "./convert/skeleton.ts";
 import { buildFaceMesh } from "./convert/meshExport.ts";
 import { buildBodyData, bodyToSkinnedMeshExports, getBodyJoints, setBodySource, hasUserBody } from "./convert/body.ts";
+import { augmentFaceForVrm } from "./convert/vrmFaceMap.ts";
 import { sanitizeFilename, downloadBytes } from "./fbx/export.ts";
 import { PreviewScene } from "./preview/scene.ts";
 import { loadFaceMeshData } from "./preview/face.ts";
@@ -245,8 +246,17 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         meshes.push(buildFaceMesh(resampled, mesh));
       }
       if (bodySel.value !== "none") {
-        const body = await buildBodyData(resampled.parents, resampled.bindPos, resampled.names);
-        meshes.push(...bodyToSkinnedMeshExports(body.meshes));
+        // Recorded ARKit tracks + synthesized VRM-preset tracks, so both
+        // perfect-sync and standard VRMs get facial animation.
+        const augFace =
+          faceChk.checked && resampled.face ? augmentFaceForVrm(resampled.face) : undefined;
+        const body = await buildBodyData(
+          resampled.parents,
+          resampled.bindPos,
+          resampled.names,
+          augFace?.names,
+        );
+        meshes.push(...bodyToSkinnedMeshExports(body.meshes, augFace));
       }
       const fbx = writeAnimationFbx(resampled, {
         takeName: sanitizeFilename(loaded.name),
