@@ -1,18 +1,20 @@
-Emit binary FBX (7500) instead of ASCII so MotionBuilder imports it
+Embed recorded blendshape animation in the exported FBX
 
-MotionBuilder 2018+ dropped ASCII FBX import, so the ASCII output loaded as a
-partial dot-cloud with a "legacy file" warning. Switch to binary FBX 7500:
+The FBX can now carry the captured ARKit face animation, not just the body:
 
-- fbxBinary.ts: binary serializer (64-bit node records, 25-byte null
-  terminators, fixed assimp-style footer). Object names use the binary
-  separator name\x00\x01class (NOT ascii class::name) — getting that wrong
-  silently drops AnimationCurveNode channel tags and yields zero tracks.
-- animationFbx.ts: build an FBX node tree and serialize to binary; all object
-  names go through objName().
-- export.ts/main.ts: download the Uint8Array as a binary blob.
-- smoke test validates the binary header/footer; fbxcheck round-trips it
-  (55 bones, 56 tracks, MoBu names LeftArm/Spine1/LeftHandThumb1 intact).
+- preview/face.ts: loadFaceMeshData() extracts the facecap head geometry +
+  52 morph-target deltas (world-baked) for export.
+- clip.ts: resample() now also resamples the face weight tracks.
+- fbx/animationFbx.ts: opts.face embeds the head as a Mesh Geometry +
+  BlendShape/BlendShapeChannel deformers + Shape geometries (per-vertex
+  deltas), parented to the Head bone, with DeformPercent curves driven by the
+  recorded weights. Mesh baked into Head-local space (scale ~22cm, 180deg Y,
+  lift 9cm). Definitions counts now derived from the emitted objects.
+- main.ts: "Face blendshapes" toggle (default on) builds the channels by
+  mapping ARKit names to the facecap morphs.
 
-7500 also clears the legacy-version warning.
+Verified headlessly (npm run faceFbxCheck): the emitted binary FBX round-trips
+through FBXLoader as 1 morph mesh with 48 morph targets and 104 clip tracks
+(56 bone + 48 morph). Browser download verified, no console errors.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>

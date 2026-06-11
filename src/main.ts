@@ -1,10 +1,12 @@
 import "./style.css";
 import { parseWanim, BONE_COUNT, type WanimClip } from "./wanim/parse.ts";
 import { convertCharacter, resample, type ConvertedClip } from "./convert/clip.ts";
-import { writeAnimationFbx } from "./fbx/animationFbx.ts";
+import { writeAnimationFbx, type FaceExport } from "./fbx/animationFbx.ts";
 import { remapNames, type NameScheme } from "./convert/skeleton.ts";
 import { sanitizeFilename, downloadBytes } from "./fbx/export.ts";
 import { PreviewScene } from "./preview/scene.ts";
+import { loadFaceMeshData, toFacecapName } from "./preview/face.ts";
+import type { ResampledClip } from "./convert/clip.ts";
 
 const emptyState = document.getElementById("empty-state") as HTMLElement;
 const loadedState = document.getElementById("loaded-state") as HTMLElement;
@@ -20,6 +22,30 @@ let loaded: { name: string; clip: WanimClip; converted: ConvertedClip } | null =
 function showError(message: string) {
   errorEl.textContent = message;
   errorEl.hidden = false;
+}
+
+/** Pair recorded ARKit weight tracks with the facecap morph deltas by name. */
+function buildFaceExport(
+  resampled: ResampledClip,
+  mesh: Awaited<ReturnType<typeof loadFaceMeshData>>,
+): FaceExport {
+  const channels: FaceExport["channels"] = [];
+  resampled.face!.names.forEach((name, n) => {
+    const deltas = mesh.morphs[toFacecapName(name)];
+    if (!deltas) return; // no matching morph on the head (e.g. trackingStatus)
+    const weights = resampled.face!.tracks[n];
+    let moved = 0;
+    for (let i = 0; i < weights.length; i++) moved = Math.max(moved, Math.abs(weights[i]));
+    if (moved < 0.01) return; // skip channels that never animate
+    channels.push({ name, deltas, weights });
+  });
+  return {
+    positions: mesh.positions,
+    indices: mesh.indices,
+    center: mesh.center,
+    height: mesh.height,
+    channels,
+  };
 }
 
 function fmtTime(seconds: number): string {
@@ -80,11 +106,16 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         <option value="first">First frame</option>
       </select>
     </label>
+    <label class="field">
+      <span>Face blendshapes</span>
+      <input id="face" type="checkbox" ${clip.characters[0] && converted.face ? "checked" : "disabled"} />
+    </label>
     <button id="download" class="button primary">Download FBX</button>
     <p class="note">The preview head is a stand-in driven by the recorded ARKit
-      blendshapes (face data is not part of the FBX). The exported FBX is
-      skeletal animation only — no mesh, blendshapes, or props. Verify rotation
-      order in your DCC; if limbs twist, see the FBX notes.</p>
+      blendshapes. With <strong>Face blendshapes</strong> on, that head and its
+      morph animation are embedded in the FBX; otherwise the FBX is skeleton-only.
+      Exports as binary FBX 7.5 (MotionBuilder-compatible). Verify rotation order
+      in your DCC; if limbs twist, see the FBX notes.</p>
     <button id="reset" class="button ghost">Load another file</button>
   `;
 
@@ -94,6 +125,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   const fpsSel = document.getElementById("fps") as HTMLSelectElement;
   const namesSel = document.getElementById("names") as HTMLSelectElement;
   const restSel = document.getElementById("rest") as HTMLSelectElement;
+  const faceChk = document.getElementById("face") as HTMLInputElement;
   const downloadBtn = document.getElementById("download") as HTMLButtonElement;
   const resetBtn = document.getElementById("reset") as HTMLButtonElement;
 
@@ -118,29 +150,37 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     scrubbing = false;
   });
 
-  downloadBtn.addEventListener("click", () => {
+  downloadBtn.addEventListener("click", async () => {
     if (!loaded) return;
     downloadBtn.disabled = true;
     downloadBtn.textContent = "Generating…";
-    // Defer so the button repaints before the synchronous export runs.
-    setTimeout(() => {
-      try {
-        const fps = Number(fpsSel.value);
-        const resampled = resample(loaded!.converted, fps);
-        const names = remapNames(resampled.names, namesSel.value as NameScheme);
-        const fbx = writeAnimationFbx(resampled, {
-          takeName: sanitizeFilename(loaded!.name),
-          names,
-          tposeRest: restSel.value === "tpose",
-        });
-        downloadBytes(`${sanitizeFilename(loaded!.name)}.fbx`, fbx);
-      } catch (err) {
-        showError(err instanceof Error ? err.message : String(err));
-      } finally {
-        downloadBtn.disabled = false;
-        downloadBtn.textContent = "Download FBX";
+    // Yield once so the button repaints before the heavy work.
+    await new Promise((r) => setTimeout(r, 16));
+    try {
+      const fps = Number(fpsSel.value);
+      const resampled = resample(loaded.converted, fps);
+      const names = remapNames(resampled.names, namesSel.value as NameScheme);
+      let face: FaceExport | undefined;
+      let headIndex: number | undefined;
+      if (faceChk.checked && resampled.face) {
+        const mesh = await loadFaceMeshData();
+        face = buildFaceExport(resampled, mesh);
+        headIndex = resampled.names.indexOf("Head");
       }
-    }, 16);
+      const fbx = writeAnimationFbx(resampled, {
+        takeName: sanitizeFilename(loaded.name),
+        names,
+        tposeRest: restSel.value === "tpose",
+        face,
+        headIndex,
+      });
+      downloadBytes(`${sanitizeFilename(loaded.name)}.fbx`, fbx);
+    } catch (err) {
+      showError(err instanceof Error ? err.message : String(err));
+    } finally {
+      downloadBtn.disabled = false;
+      downloadBtn.textContent = "Download FBX";
+    }
   });
 
   resetBtn.addEventListener("click", () => {

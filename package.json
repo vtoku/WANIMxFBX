@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "smoke": "node --experimental-strip-types scripts/wanimSmoke.ts",
     "fbxcheck": "node scripts/fbxLoadCheck.mjs",
+    "faceFbxCheck": "node scripts/faceFbxCheck.mjs",
     "drive": "node scripts/driveApp.mjs"
   },
   "dependencies": {

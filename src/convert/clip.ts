@@ -119,6 +119,8 @@ export interface ResampledClip {
   localPos: Vec3[][];
   localQuat: Quat[][];
   bindPos: Vec3[];
+  /** Face blendshape weights resampled to the fixed rate, or null. */
+  face: { names: string[]; tracks: Float32Array[] } | null;
 }
 
 function lerp(a: number, b: number, t: number): number {
@@ -134,6 +136,7 @@ export function resample(c: ConvertedClip, fps = 60): ResampledClip {
 
   const localPos: Vec3[][] = Array.from({ length: boneCount }, () => new Array<Vec3>(frameCount));
   const localQuat: Quat[][] = Array.from({ length: boneCount }, () => new Array<Quat>(frameCount));
+  const faceTracks = c.face ? c.face.tracks.map(() => new Float32Array(frameCount)) : null;
 
   let cursor = 0;
   for (let i = 0; i < frameCount; i++) {
@@ -153,6 +156,13 @@ export function resample(c: ConvertedClip, fps = 60): ResampledClip {
       const qb = c.localQuat[b][cursor + 1] ?? qa;
       localQuat[b][i] = quatSlerp(qa, qb, frac);
     }
+    if (faceTracks && c.face) {
+      for (let n = 0; n < faceTracks.length; n++) {
+        const a = c.face.tracks[n][cursor];
+        const b = c.face.tracks[n][cursor + 1] ?? a;
+        faceTracks[n][i] = lerp(a, b, frac);
+      }
+    }
   }
 
   return {
@@ -163,5 +173,6 @@ export function resample(c: ConvertedClip, fps = 60): ResampledClip {
     localPos,
     localQuat,
     bindPos: c.bindPos,
+    face: c.face && faceTracks ? { names: c.face.names, tracks: faceTracks } : null,
   };
 }

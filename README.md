@@ -17,11 +17,15 @@ Reads a `.wanim` file recorded in [Warudo](https://warudo.app/) and exports an `
 
 The preview face is for reference only; face data is not written to the FBX (see below).
 
-The FBX contains a 55-bone Unity humanoid skeleton (original bone names preserved) with per-bone rotation curves and root (hips) translation, in a single take. It is Y-up, in centimetres.
+The FBX is **binary FBX 7.5** (imports into MotionBuilder, Blender, Maya, Unity): a 55-bone Unity humanoid skeleton with per-bone rotation curves and root (hips) translation, in a single take, Y-up, centimetres. Options:
+
+- **Bone names** — Unity HumanBodyBones (default) or MotionBuilder/HumanIK names (auto-characterizes in MotionBuilder).
+- **Rest pose** — T-pose (default) or first recorded frame.
+- **Face blendshapes** — embeds a stand-in head mesh with the recorded ARKit blendshape animation (52 ARKit channels) as morph targets.
 
 ## Not included
 
-Mesh, textures, blendshapes/morphs, spring bones, and props are not exported — `.wanim` records joint motion, not geometry.
+Textures, spring/jiggle bones, and props are not exported. The recorded mesh isn't in the `.wanim` file, so the embedded face head is a generic stand-in driven by the captured blendshape weights.
 
 ## Credits & trademarks
 

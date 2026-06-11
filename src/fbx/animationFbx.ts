@@ -3,7 +3,7 @@ import type { Vec3 } from "../wanim/parse.ts";
 import { quatToEulerZYX, RAD2DEG } from "../convert/quat.ts";
 import {
   serializeFbxBinary, node, objName, type FbxNode, type FbxProp,
-  I, L, D, C, S, aI, aL, aF,
+  I, L, D, C, S, aI, aL, aF, aD,
 } from "./fbxBinary.ts";
 
 // Builds a binary FBX 7500 skeletal animation: a LimbNode skeleton driven by an
@@ -24,11 +24,28 @@ function unwrapDegrees(values: number[]): void {
 
 const P = (name: string, ...rest: FbxProp[]): FbxNode => node("P", [S(name), ...rest]);
 
+export interface FaceExport {
+  /** Flat control-point positions (xyz) in the head model's own units. */
+  positions: Float32Array;
+  /** Triangle control-point indices (flat). */
+  indices: Uint32Array;
+  center: [number, number, number];
+  height: number;
+  /** One per animated blendshape: ARKit name, per-control-point deltas, weight track. */
+  channels: { name: string; deltas: Float32Array; weights: Float32Array }[];
+}
+
 export interface WriteAnimOpts {
   takeName?: string;
   names?: string[];
   tposeRest?: boolean;
+  /** Embed an animated blendshape head mesh, seated on the given Head bone. */
+  face?: FaceExport;
+  headIndex?: number;
 }
+
+const TARGET_HEAD_CM = 22; // exported head height
+const HEAD_LIFT_CM = 9; // raise the head above the neck-top joint
 
 export function writeAnimationFbx(clip: ResampledClip, opts: WriteAnimOpts = {}): Uint8Array {
   const takeName = opts.takeName ?? "Take 001";
@@ -145,6 +162,100 @@ export function writeAnimationFbx(clip: ResampledClip, opts: WriteAnimOpts = {})
   objects.push(curve(hipsTrans.curveIds[1], transY));
   objects.push(curve(hipsTrans.curveIds[2], transZ));
 
+  // ---- optional blendshape face -----------------------------------------
+  const faceConns: { kind: "OO" | "OP"; a: number; b: number; p?: string }[] = [];
+  if (opts.face && opts.headIndex !== undefined && opts.headIndex >= 0) {
+    const face = opts.face;
+    const headModelId = boneModelId[opts.headIndex];
+    const scale = TARGET_HEAD_CM / (face.height || 1);
+    const [cx, cy, cz] = face.center;
+
+    // Seat into the Head bone's local space (cm): recenter, scale, rotate 180°
+    // about Y so the head faces the same way as the body, lift above the joint.
+    const baked = new Float64Array(face.positions.length);
+    for (let i = 0; i < face.positions.length; i += 3) {
+      const x = (face.positions[i] - cx) * scale;
+      const y = (face.positions[i + 1] - cy) * scale;
+      const z = (face.positions[i + 2] - cz) * scale;
+      baked[i] = -x;            // Ry180
+      baked[i + 1] = y + HEAD_LIFT_CM;
+      baked[i + 2] = -z;
+    }
+    // Polygon vertex index: triangles with the last index of each face negated.
+    const poly = new Int32Array(face.indices.length);
+    for (let i = 0; i < face.indices.length; i += 3) {
+      poly[i] = face.indices[i];
+      poly[i + 1] = face.indices[i + 1];
+      poly[i + 2] = -face.indices[i + 2] - 1;
+    }
+
+    const geoId = id();
+    const meshModelId = id();
+    const blendShapeId = id();
+
+    objects.push(node("Geometry", [L(geoId), S(objName("Face", "Geometry")), S("Mesh")], [
+      node("GeometryVersion", [I(124)]),
+      node("Vertices", [aD(baked)]),
+      node("PolygonVertexIndex", [aI(poly)]),
+    ]));
+    objects.push(node("Model", [L(meshModelId), S(objName("FaceMesh", "Model")), S("Mesh")], [
+      node("Version", [I(232)]),
+      node("Properties70", [], [
+        P("InheritType", S("enum"), S(""), S(""), I(1)),
+        P("Lcl Translation", S("Lcl Translation"), S(""), S("A"), D(0), D(0), D(0)),
+        P("Lcl Rotation", S("Lcl Rotation"), S(""), S("A"), D(0), D(0), D(0)),
+        P("Lcl Scaling", S("Lcl Scaling"), S(""), S("A"), D(1), D(1), D(1)),
+      ]),
+      node("Shading", [C(true)]),
+      node("Culling", [S("CullingOff")]),
+    ]));
+    objects.push(node("Deformer", [L(blendShapeId), S(objName("", "BlendShape")), S("BlendShape")], [
+      node("Version", [I(100)]),
+    ]));
+
+    faceConns.push({ kind: "OO", a: geoId, b: meshModelId });
+    faceConns.push({ kind: "OO", a: meshModelId, b: headModelId });
+    faceConns.push({ kind: "OO", a: blendShapeId, b: geoId });
+
+    for (const ch of face.channels) {
+      const channelId = id();
+      const shapeId = id();
+      const cnId = id();
+      const curveId = id();
+      const deltas = new Float64Array(ch.deltas.length);
+      for (let i = 0; i < ch.deltas.length; i += 3) {
+        deltas[i] = -ch.deltas[i] * scale; // Ry180 + scale (vector: no translation/lift)
+        deltas[i + 1] = ch.deltas[i + 1] * scale;
+        deltas[i + 2] = -ch.deltas[i + 2] * scale;
+      }
+      const idxAll = new Int32Array(face.positions.length / 3);
+      for (let i = 0; i < idxAll.length; i++) idxAll[i] = i;
+
+      objects.push(node("Deformer", [L(channelId), S(objName(ch.name, "SubDeformer")), S("BlendShapeChannel")], [
+        node("Version", [I(100)]),
+        node("DeformPercent", [D(0)]),
+        node("FullWeights", [aD(new Float64Array([100]))]),
+      ]));
+      objects.push(node("Geometry", [L(shapeId), S(objName(ch.name, "Geometry")), S("Shape")], [
+        node("Version", [I(100)]),
+        node("Indexes", [aI(idxAll)]),
+        node("Vertices", [aD(deltas)]),
+      ]));
+      // DeformPercent animation (weights 0..1 → percent 0..100).
+      const percent = Float32Array.from(ch.weights, (w) => w * 100);
+      objects.push(node("AnimationCurveNode", [L(cnId), S(objName("DeformPercent", "AnimCurveNode")), S("")], [
+        node("Properties70", [], [P("d|DeformPercent", S("Number"), S(""), S("A"), D(percent[0] ?? 0))]),
+      ]));
+      objects.push(curve(curveId, Array.from(percent)));
+
+      faceConns.push({ kind: "OO", a: channelId, b: blendShapeId });
+      faceConns.push({ kind: "OO", a: shapeId, b: channelId });
+      faceConns.push({ kind: "OO", a: cnId, b: layerId });
+      faceConns.push({ kind: "OP", a: cnId, b: channelId, p: "DeformPercent" });
+      faceConns.push({ kind: "OP", a: curveId, b: cnId, p: "d|DeformPercent" });
+    }
+  }
+
   // ---- Connections -------------------------------------------------------
   const conns: FbxNode[] = [];
   const OO = (src: number, dst: number) => conns.push(node("C", [S("OO"), L(src), L(dst)]));
@@ -167,21 +278,23 @@ export function writeAnimationFbx(clip: ResampledClip, opts: WriteAnimOpts = {})
   OP(hipsTrans.nodeId, boneModelId[0], "Lcl Translation");
   for (let c = 0; c < 3; c++) OP(hipsTrans.curveIds[c], hipsTrans.nodeId, comp[c]);
 
-  // ---- Definitions counts ------------------------------------------------
-  const curveNodeCount = boneCount + 1;
-  const curveCount = curveNodeCount * 3;
-  const totalDefs = 1 + boneCount + boneCount + 1 + 1 + curveNodeCount + curveCount;
+  for (const fc of faceConns) {
+    if (fc.kind === "OO") OO(fc.a, fc.b);
+    else OP(fc.a, fc.b, fc.p!);
+  }
 
+  // ---- Definitions counts (derived from the objects actually emitted) ----
+  const typeCounts: Record<string, number> = {};
+  for (const o of objects) typeCounts[o.name] = (typeCounts[o.name] ?? 0) + 1;
+  const objectTypes = Object.entries(typeCounts).map(([name, count]) =>
+    node("ObjectType", [S(name)], [node("Count", [I(count)])]),
+  );
+  const totalDefs = 1 + objects.length;
   const definitions = node("Definitions", [], [
     node("Version", [I(100)]),
     node("Count", [I(totalDefs)]),
     node("ObjectType", [S("GlobalSettings")], [node("Count", [I(1)])]),
-    node("ObjectType", [S("Model")], [node("Count", [I(boneCount)])]),
-    node("ObjectType", [S("NodeAttribute")], [node("Count", [I(boneCount)])]),
-    node("ObjectType", [S("AnimationStack")], [node("Count", [I(1)])]),
-    node("ObjectType", [S("AnimationLayer")], [node("Count", [I(1)])]),
-    node("ObjectType", [S("AnimationCurveNode")], [node("Count", [I(curveNodeCount)])]),
-    node("ObjectType", [S("AnimationCurve")], [node("Count", [I(curveCount)])]),
+    ...objectTypes,
   ]);
 
   // ---- top-level ---------------------------------------------------------
