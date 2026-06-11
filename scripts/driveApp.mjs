@@ -35,10 +35,10 @@ console.log("stats:", JSON.stringify(stats));
 const canvas = await page.$eval("#viewport canvas", (c) => ({ w: c.width, h: c.height }));
 console.log("canvas:", JSON.stringify(canvas));
 
-// Confirm animation advances: read timecode twice.
-const tc1 = await page.textContent("#timecode");
+// Confirm animation advances: read the transport-overlay timecode twice.
+const tc1 = await page.textContent(".transport-overlay .t-time");
 await page.waitForTimeout(1200);
-const tc2 = await page.textContent("#timecode");
+const tc2 = await page.textContent(".transport-overlay .t-time");
 console.log("timecode:", tc1, "->", tc2, tc1 !== tc2 ? "(advancing)" : "(STATIC!)");
 
 await page.screenshot({ path: "scripts/preview-shot.png" });
