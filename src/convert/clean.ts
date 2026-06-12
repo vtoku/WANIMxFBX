@@ -21,13 +21,24 @@ export interface CleanOpts {
   limitWrists?: boolean;
 }
 
+/** Filled by cleanClip when passed: what each filter actually changed. */
+export interface CleanStats {
+  /** Frames replaced by the despike filter (across all bones). */
+  despiked: number;
+  /** Wrist frames clamped by the limiter. */
+  wristClamped: number;
+  /** Mean per-frame change introduced by smoothing, degrees (0 = off). */
+  smoothedMeanDeg: number;
+}
+
 const DEG2RAD = Math.PI / 180;
 
 function angleBetween(a: Quat, b: Quat): number {
   return 2 * Math.acos(Math.min(1, Math.abs(quatDot(a, b))));
 }
 
-function despikeQuats(track: Quat[], thresholdRad: number): void {
+function despikeQuats(track: Quat[], thresholdRad: number): number {
+  let fixed = 0;
   for (let i = 1; i < track.length - 1; i++) {
     const prev = track[i - 1];
     const cur = track[i];
@@ -38,8 +49,10 @@ function despikeQuats(track: Quat[], thresholdRad: number): void {
     // Lone outlier: far from both neighbours, but the neighbours are close.
     if (dPrev > thresholdRad && dNext > thresholdRad && dSpan < thresholdRad) {
       track[i] = quatSlerp(prev, next, 0.5);
+      fixed++;
     }
   }
+  return fixed;
 }
 
 interface Biquad { b0: number; b1: number; b2: number; a1: number; a2: number; }
@@ -102,7 +115,8 @@ function quatMul(a: Quat, b: Quat): Quat {
   ];
 }
 
-function limitTrack(track: Quat[], axis: Vec3): void {
+function limitTrack(track: Quat[], axis: Vec3): number {
+  let clamped = 0;
   const [ax, ay, az] = axis;
   for (let f = 0; f < track.length; f++) {
     const q = track[f];
@@ -128,10 +142,13 @@ function limitTrack(track: Quat[], axis: Vec3): void {
     }
     const swing2 = swingOver ? quatSlerp([0, 0, 0, 1], swing, WRIST_SWING_MAX / swingAngle) : swing;
     track[f] = quatNormalize(quatMul(swing2, twist));
+    clamped++;
   }
+  return clamped;
 }
 
-function limitWrists(c: ConvertedClip, localQuat: Quat[][]): void {
+function limitWrists(c: ConvertedClip, localQuat: Quat[][]): number {
+  let clamped = 0;
   for (const side of ["Left", "Right"]) {
     const hand = c.names.indexOf(`${side}Hand`);
     if (hand < 0) continue;
@@ -140,11 +157,12 @@ function limitWrists(c: ConvertedClip, localQuat: Quat[][]): void {
     const mid = c.names.indexOf(`${side}MiddleProximal`);
     const off = mid >= 0 ? c.bindPos[mid] : ([side === "Left" ? 1 : -1, 0, 0] as Vec3);
     const len = Math.hypot(off[0], off[1], off[2]) || 1;
-    limitTrack(localQuat[hand], [off[0] / len, off[1] / len, off[2] / len]);
+    clamped += limitTrack(localQuat[hand], [off[0] / len, off[1] / len, off[2] / len]);
   }
+  return clamped;
 }
 
-export function cleanClip(c: ConvertedClip, opts: CleanOpts): ConvertedClip {
+export function cleanClip(c: ConvertedClip, opts: CleanOpts, stats?: CleanStats): ConvertedClip {
   const frames = c.times.length;
   if (frames < 5) return c;
 
@@ -152,14 +170,20 @@ export function cleanClip(c: ConvertedClip, opts: CleanOpts): ConvertedClip {
   const localQuat = c.localQuat.map((t) => t.map((q) => [...q] as Quat));
   const localPos = c.localPos.map((t) => t.map((p) => [...p] as Vec3));
 
-  if (opts.limitWrists) limitWrists(c, localQuat);
+  if (opts.limitWrists) {
+    const n = limitWrists(c, localQuat);
+    if (stats) stats.wristClamped = n;
+  }
 
   if (opts.despike) {
     const thr = (opts.despikeDeg ?? 35) * DEG2RAD;
-    for (const t of localQuat) despikeQuats(t, thr);
+    let n = 0;
+    for (const t of localQuat) n += despikeQuats(t, thr);
+    if (stats) stats.despiked = n;
   }
 
   if (opts.smooth) {
+    const before = stats ? localQuat.map((t) => t.map((qq) => [...qq] as Quat)) : null;
     const fs = c.duration > 0 ? (frames - 1) / c.duration : 60;
     const fc = Math.max(0.5, Math.min(opts.cutoffHz ?? 7, fs / 2 - 0.1));
     const q = butterworthLowpass(fc, fs);
@@ -182,6 +206,16 @@ export function cleanClip(c: ConvertedClip, opts: CleanOpts): ConvertedClip {
     const hips = localPos[0];
     for (let comp = 0; comp < 3; comp++) {
       smoothComponents(frames, (f) => hips[f][comp], (f, v) => { hips[f][comp] = v; }, q);
+    }
+    if (stats && before) {
+      let sum = 0, n = 0;
+      for (let b = 0; b < localQuat.length; b++) {
+        for (let f = 0; f < frames; f++) {
+          const d = angleBetween(before[b][f], localQuat[b][f]);
+          if (Number.isFinite(d)) { sum += d; n++; }
+        }
+      }
+      stats.smoothedMeanDeg = n ? (sum / n) / DEG2RAD : 0;
     }
   }
 

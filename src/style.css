@@ -277,6 +277,13 @@ main:has(.loaded-state:not([hidden])) {
   color: var(--text-dim);
 }
 
+.clean-stats {
+  margin: 0.3rem 0 0;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  min-height: 1em;
+}
+
 .field.sub input[type="range"] {
   flex: 1;
   min-width: 0;

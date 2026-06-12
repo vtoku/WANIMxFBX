@@ -88,6 +88,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       <span>Cutoff <output id="cutoffVal">7 Hz</output></span>
       <input id="cutoff" type="range" min="1" max="15" step="0.5" value="7" />
     </label>
+    <p id="cleanStats" class="clean-stats"></p>
 
     <h3 class="section">Export</h3>
     <label class="field">
@@ -164,13 +165,24 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     limitWrists: limitWristsChk.checked,
   });
 
+  const cleanStatsEl = document.getElementById("cleanStats") as HTMLParagraphElement;
+
   async function reclean() {
     if (!loaded || !preview) return;
     const opts = cleanOpts();
-    let display =
-      opts.despike || opts.smooth || opts.limitWrists
-        ? cleanClip(loaded.converted, opts)
-        : loaded.converted;
+    const stats = { despiked: 0, wristClamped: 0, smoothedMeanDeg: 0 };
+    const anyFilter = opts.despike || opts.smooth || opts.limitWrists;
+    let display = anyFilter ? cleanClip(loaded.converted, opts, stats) : loaded.converted;
+    // Report what the filters actually changed — proof they're applied.
+    if (!anyFilter) {
+      cleanStatsEl.textContent = "";
+    } else {
+      const parts: string[] = [];
+      if (opts.limitWrists) parts.push(`wrists clamped: ${stats.wristClamped} frames`);
+      if (opts.despike) parts.push(`pops fixed: ${stats.despiked}`);
+      if (opts.smooth) parts.push(`smoothing: ±${stats.smoothedMeanDeg.toFixed(2)}° avg`);
+      cleanStatsEl.textContent = `Applied — ${parts.join(" · ")}`;
+    }
     if (propSel.value === "body") {
       try {
         display = retargetProportions(
