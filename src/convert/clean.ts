@@ -19,6 +19,12 @@ export interface CleanOpts {
   cutoffHz?: number;
   /** Clamp wrist rotation to the human range (twist ±90°, swing 85°). */
   limitWrists?: boolean;
+  /**
+   * Freeze the hand's local rotation to neutral (identity = T-pose relative,
+   * so the hand just follows the forearm). For hands flailing from bad
+   * tracking; fingers still animate.
+   */
+  lockWrists?: "left" | "right" | "both";
 }
 
 /** Filled by cleanClip when passed: what each filter actually changed. */
@@ -169,6 +175,15 @@ export function cleanClip(c: ConvertedClip, opts: CleanOpts, stats?: CleanStats)
   // Deep-copy the tracks we mutate.
   const localQuat = c.localQuat.map((t) => t.map((q) => [...q] as Quat));
   const localPos = c.localPos.map((t) => t.map((p) => [...p] as Vec3));
+
+  if (opts.lockWrists) {
+    for (const side of ["Left", "Right"] as const) {
+      if (opts.lockWrists !== "both" && opts.lockWrists !== side.toLowerCase()) continue;
+      const hand = c.names.indexOf(`${side}Hand`);
+      if (hand < 0) continue;
+      for (let f = 0; f < frames; f++) localQuat[hand][f] = [0, 0, 0, 1];
+    }
+  }
 
   if (opts.limitWrists) {
     const n = limitWrists(c, localQuat);

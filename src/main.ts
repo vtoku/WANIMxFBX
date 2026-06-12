@@ -73,6 +73,15 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       <input id="limitWrists" type="checkbox" checked />
     </label>
     <label class="field">
+      <span>Lock wrist (bad tracking)</span>
+      <select id="lockWrists">
+        <option value="" selected>Off</option>
+        <option value="left">Left</option>
+        <option value="right">Right</option>
+        <option value="both">Both</option>
+      </select>
+    </label>
+    <label class="field">
       <span>Remove pops / flips</span>
       <input id="despike" type="checkbox" />
     </label>
@@ -157,12 +166,14 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   const resetBtn = document.getElementById("reset") as HTMLButtonElement;
 
   const limitWristsChk = document.getElementById("limitWrists") as HTMLInputElement;
+  const lockWristsSel = document.getElementById("lockWrists") as HTMLSelectElement;
   const cleanOpts = (): CleanOpts => ({
     despike: despikeChk.checked,
     despikeDeg: Number(despikeDeg.value),
     smooth: smoothChk.checked,
     cutoffHz: Number(cutoff.value),
     limitWrists: limitWristsChk.checked,
+    lockWrists: (lockWristsSel.value || undefined) as CleanOpts["lockWrists"],
   });
 
   const cleanStatsEl = document.getElementById("cleanStats") as HTMLParagraphElement;
@@ -171,13 +182,14 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     if (!loaded || !preview) return;
     const opts = cleanOpts();
     const stats = { despiked: 0, wristClamped: 0, smoothedMeanDeg: 0 };
-    const anyFilter = opts.despike || opts.smooth || opts.limitWrists;
+    const anyFilter = opts.despike || opts.smooth || opts.limitWrists || opts.lockWrists;
     let display = anyFilter ? cleanClip(loaded.converted, opts, stats) : loaded.converted;
     // Report what the filters actually changed — proof they're applied.
     if (!anyFilter) {
       cleanStatsEl.textContent = "";
     } else {
       const parts: string[] = [];
+      if (opts.lockWrists) parts.push(`wrist locked: ${opts.lockWrists}`);
       if (opts.limitWrists) parts.push(`wrists clamped: ${stats.wristClamped} frames`);
       if (opts.despike) parts.push(`pops fixed: ${stats.despiked}`);
       if (opts.smooth) parts.push(`smoothing: ±${stats.smoothedMeanDeg.toFixed(2)}° avg`);
@@ -206,6 +218,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   for (const c of [despikeChk, smoothChk, limitWristsChk]) c.addEventListener("change", () => void reclean());
   for (const r of [despikeDeg, cutoff]) r.addEventListener("change", () => void reclean());
   propSel.addEventListener("change", () => void reclean());
+  lockWristsSel.addEventListener("change", () => void reclean());
 
   const bodyFile = document.getElementById("bodyfile") as HTMLInputElement;
   let lastBodyChoice = bodySel.value;
