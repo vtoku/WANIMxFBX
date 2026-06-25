@@ -208,12 +208,15 @@ export function bindWorldPositions(parents: number[], bindPos: Vec3[]): Vec3[] {
  *
  * This unpacks that concentration: each dead, zero-length intermediate spine
  * bone is given a real position halfway to its child (every joint's world
- * position is preserved in the bind), and its parent's per-frame rotation is
- * split evenly across the two joints, so the fold spreads into a smooth curve
- * instead of one kink. No-op when no such dead bone exists (e.g. recordings
- * whose avatar had a full spine), so it is safe to always offer as a toggle.
+ * position is preserved in the bind), and a fraction `amount` of its parent's
+ * per-frame rotation is moved up onto it, so the fold spreads into a smoother
+ * curve instead of one kink. `amount` is the share handed to the upper (dead)
+ * joint: 0 leaves the bend on the lower joint (no change), 0.5 splits it
+ * evenly (smoothest), 1 moves it entirely to the upper joint. No-op when no
+ * such dead bone exists, so it is safe to always offer as a toggle.
  */
-export function distributeBonelessSpine(c: ConvertedClip): ConvertedClip {
+export function distributeBonelessSpine(c: ConvertedClip, amount = 0.5): ConvertedClip {
+  const a = Math.max(0, Math.min(1, amount));
   const frames = c.times.length;
   const isDegenerate = (q: Quat) => Math.hypot(q[0], q[1], q[2], q[3]) < 0.5;
   const childrenOf = (i: number): number[] => {
@@ -248,13 +251,14 @@ export function distributeBonelessSpine(c: ConvertedClip): ConvertedClip {
       localPos[d][f] = [...bindPos[d]] as Vec3;
       localPos[child][f] = [...bindPos[child]] as Vec3;
     }
-    // (2) Split the parent's rotation: parent keeps half, dead bone takes half
-    // (h·h = original, so the child chain's orientation is unchanged).
+    // (2) Move a fraction `a` of the parent's rotation up onto the dead bone:
+    // parent keeps R^(1-a), dead takes R^a. They share R's axis, so
+    // R^(1-a)·R^a = R and the child chain's orientation is unchanged.
     if (p >= 0) {
       for (let f = 0; f < frames; f++) {
-        const h = quatSlerp([0, 0, 0, 1], localQuat[p][f], 0.5);
-        localQuat[p][f] = h;
-        localQuat[d][f] = [...h] as Quat;
+        const R = localQuat[p][f];
+        localQuat[p][f] = quatSlerp([0, 0, 0, 1], R, 1 - a);
+        localQuat[d][f] = quatSlerp([0, 0, 0, 1], R, a);
       }
     }
   }

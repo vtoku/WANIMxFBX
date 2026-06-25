@@ -133,6 +133,10 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       <span>Distribute spine bend</span>
       <input id="distSpine" type="checkbox" title="For avatars without an upper-chest bone: spreads a concentrated upper-spine fold into a smooth curve. No effect when the recording's spine is already complete." />
     </label>
+    <label class="field sub">
+      <span>Spread <output id="distSpineAmtVal">50%</output></span>
+      <input id="distSpineAmt" type="range" min="0" max="100" step="5" value="50" disabled />
+    </label>
     <label class="field">
       <span>Face blendshapes</span>
       <input id="face" type="checkbox" ${converted.face ? "checked" : "disabled"} />
@@ -167,6 +171,8 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   const propSel = document.getElementById("proportions") as HTMLSelectElement;
   const faceChk = document.getElementById("face") as HTMLInputElement;
   const distSpineChk = document.getElementById("distSpine") as HTMLInputElement;
+  const distSpineAmt = document.getElementById("distSpineAmt") as HTMLInputElement;
+  const distSpineAmtVal = document.getElementById("distSpineAmtVal") as HTMLOutputElement;
   const bodySel = document.getElementById("body") as HTMLSelectElement;
   const downloadBtn = document.getElementById("download") as HTMLButtonElement;
   const resetBtn = document.getElementById("reset") as HTMLButtonElement;
@@ -213,7 +219,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     }
     // After proportions (which would reset a dead bone's bind): spread a spine
     // bend concentrated on one joint by a missing upper-chest bone.
-    if (distSpineChk.checked) display = distributeBonelessSpine(display);
+    if (distSpineChk.checked) display = distributeBonelessSpine(display, Number(distSpineAmt.value) / 100);
     loaded.display = display;
     const trim = transport?.getTrim();
     preview.setClip(display); // duration is unchanged; this resets the pose
@@ -225,7 +231,10 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   despikeDeg.addEventListener("input", () => { despikeVal.value = `${despikeDeg.value}°`; });
   cutoff.addEventListener("input", () => { cutoffVal.value = `${cutoff.value} Hz`; });
   for (const c of [despikeChk, smoothChk, limitWristsChk, distSpineChk]) c.addEventListener("change", () => void reclean());
-  for (const r of [despikeDeg, cutoff]) r.addEventListener("change", () => void reclean());
+  for (const r of [despikeDeg, cutoff, distSpineAmt]) r.addEventListener("change", () => void reclean());
+  distSpineAmtVal.value = `${distSpineAmt.value}%`;
+  distSpineAmt.addEventListener("input", () => { distSpineAmtVal.value = `${distSpineAmt.value}%`; });
+  distSpineChk.addEventListener("change", () => { distSpineAmt.disabled = !distSpineChk.checked; });
   propSel.addEventListener("change", () => void reclean());
   lockWristsSel.addEventListener("change", () => void reclean());
 
