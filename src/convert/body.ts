@@ -478,6 +478,26 @@ export function extractBodyMeshes(
     }
     return mean(ls);
   });
+  // OUR segment direction toward the SAME joints the source's mapped children
+  // resolve to. The alignment rotation maps the source rest direction onto
+  // this; if the source skips a bone we have (no UpperChest), its rest dir
+  // averages over Neck+shoulders, so the target must too — otherwise the
+  // mismatched tilt pitches the upper spine ("the spine looks rotated").
+  // Falls back (empty) to ourAxis[m]; identical to it on 1:1 rigs.
+  const ourDirForBone: (THREE.Vector3 | null)[] = skeleton.bones.map((_, j) => {
+    const kids = mappedChildOur[j];
+    if (!kids.length) return null;
+    const m = boneOurIndex[j];
+    const dir = new THREE.Vector3();
+    for (const ci of kids) {
+      dir.add(new THREE.Vector3(
+        ourWorld[ci][0] - ourWorld[m][0],
+        ourWorld[ci][1] - ourWorld[m][1],
+        ourWorld[ci][2] - ourWorld[m][2],
+      ));
+    }
+    return dir.lengthSq() > 1e-10 ? dir.normalize() : null;
+  });
 
   // Global yaw: rest forward heading (toes relative to feet, or foot-vertex
   // centroids) turned to +Z.
@@ -589,7 +609,7 @@ export function extractBodyMeshes(
     const m = boneOurIndex[j];
     const D = new THREE.Matrix4().makeTranslation(-restJoint[j].x, -restJoint[j].y, -restJoint[j].z);
     D.premultiply(G);
-    const dst = ourAxis[m];
+    const dst = ourDirForBone[j] ?? ourAxis[m];
     const dir = yawedDir[j];
     // Head/eyes transfer RIGIDLY (no axial stretch) ??? a head should keep its
     // authored scale (a VRM head was visibly shrunk by the eye-segment ratio).
