@@ -449,6 +449,22 @@ export function extractBodyMeshes(
     }
     return dir.lengthSq() > 1e-10 ? dir.normalize() : null;
   });
+  // OUR bone indices the mapped children resolve to (same filter as restLen).
+  // When the source rig SKIPS an intermediate bone we have (e.g. a VRM with no
+  // UpperChest: its Chest binds straight to Neck/Shoulders), a source bone's
+  // child maps to a NON-direct descendant of ours. oLen must then measure OUR
+  // span to that same descendant, or the axial-stretch ratio is computed
+  // against mismatched spans and crushes the torso (Chest squashed to ~0.36).
+  const mappedChildOur: number[][] = skeleton.bones.map((b, j) => {
+    const out: number[] = [];
+    for (const c of childBones(b)) {
+      const cj = skeleton.bones.indexOf(c);
+      if (cj < 0 || !directlyMapped[cj] || boneOurIndex[cj] === boneOurIndex[j]) continue;
+      if (boneOurIndex[j] === hipsIdx && boneOurIndex[cj] !== spineIdx) continue;
+      out.push(boneOurIndex[cj]);
+    }
+    return out;
+  });
   const restLen = skeleton.bones.map((b, j) => {
     const ls: number[] = [];
     for (const c of childBones(b)) {
@@ -581,7 +597,10 @@ export function extractBodyMeshes(
     if (dst && dir) {
       const q = new THREE.Quaternion().setFromUnitVectors(dir, dst);
       D.premultiply(new THREE.Matrix4().makeRotationFromQuaternion(q));
-      let oLen = mean(ourChildren[m].map((cm) => segLen(ourWorld[m], ourWorld[cm])));
+      // Measure OUR span to the SAME joints restLen used on the source side
+      // (spans any bone the source rig skips); fall back to our direct children.
+      const kids = mappedChildOur[j].length ? mappedChildOur[j] : ourChildren[m];
+      let oLen = mean(kids.map((cm) => segLen(ourWorld[m], ourWorld[cm])));
       if (oLen < 1e-4 && parents[m] >= 0) oLen = segLen(ourWorld[parents[m]], ourWorld[m]);
       if (!rigid && oLen > 1e-4 && restLen[j] > 1e-4) {
         const r = Math.min(4, Math.max(0.1, oLen / restLen[j]));
