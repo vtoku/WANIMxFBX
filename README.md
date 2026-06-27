@@ -31,6 +31,10 @@ Textures, spring/jiggle bones, and props are not exported. The recorded mesh isn
 
 Independent, unofficial tool. "Warudo" is a trademark of HakuyaLabs. Not affiliated with or endorsed by them. The preview face model is the "facecap" head by [Face Cap](https://www.bannaflak.com/face-cap) (Bannaflak), distributed with three.js; textures are stripped and it is used for on-screen reference only.
 
+## Intended use
+
+This converts **your own** motion recordings. It is **not** for ripping animations bundled with Warudo or third-party assets. Make sure you hold the proper license (e.g. from Booth or the Unity Asset Store) for any motion you convert.
+
 ## License
 
 MIT.
