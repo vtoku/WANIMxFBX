@@ -150,8 +150,13 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       </select>
     </label>
     <input id="bodyfile" type="file" accept=".vrm,.glb" hidden />
-    <button id="download" class="button primary">Download FBX</button>
-    <button id="downloadVrma" class="button">Download VRMA</button>
+    <div class="download-row">
+      <select id="format" aria-label="Export format">
+        <option value="fbx" selected>FBX</option>
+        <option value="vrma">VRMA</option>
+      </select>
+      <button id="download" class="button primary">Download</button>
+    </div>
     <p class="note">Trim with the in/out handles on the timeline. FBX is binary
       7.5 (MotionBuilder-compatible) with the face/body meshes embedded when
       enabled. VRMA is the VRM Animation format (humanoid + expressions) for
@@ -281,8 +286,10 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   // Apply the default proportions selection (body-mesh skeleton) on load.
   void reclean();
 
+  const formatSel = document.getElementById("format") as HTMLSelectElement;
   downloadBtn.addEventListener("click", async () => {
     if (!loaded) return;
+    const format = formatSel.value;
     downloadBtn.disabled = true;
     downloadBtn.textContent = "Generating…";
     await new Promise((r) => setTimeout(r, 16));
@@ -290,63 +297,48 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       const fps = Number(fpsSel.value);
       const trim = transport?.getTrim() ?? { start: 0, end: loaded.display.duration };
       const resampled = resample(loaded.display, fps, trim.start, trim.end);
-      const names = remapNames(resampled.names, namesSel.value as NameScheme);
-      const meshes: SkinnedMeshExport[] = [];
-      // A user VRM keeps its own head, so the facecap Face mesh is omitted.
-      if (faceChk.checked && resampled.face && !hasUserBody()) {
-        const mesh = await loadFaceMeshData();
-        meshes.push(buildFaceMesh(resampled, mesh));
-      }
-      if (bodySel.value !== "none") {
-        // Recorded ARKit tracks + synthesized VRM-preset tracks, so both
-        // perfect-sync and standard VRMs get facial animation.
+      if (format === "vrma") {
+        // Original ARKit tracks become custom expressions; the synthesized
+        // preset tracks (A/Blink/Look_*) fill the VRM presets.
         const augFace =
           faceChk.checked && resampled.face ? augmentFaceForVrm(resampled.face) : undefined;
-        const body = await buildBodyData(
-          resampled.parents,
-          resampled.bindPos,
-          resampled.names,
-          augFace?.names,
-        );
-        meshes.push(...bodyToSkinnedMeshExports(body.meshes, augFace));
+        const { writeVrma } = await import("./vrma/writeVrma.ts");
+        const vrma = writeVrma(resampled, augFace);
+        downloadBytes(`${sanitizeFilename(loaded.name)}.vrma`, vrma);
+      } else {
+        const names = remapNames(resampled.names, namesSel.value as NameScheme);
+        const meshes: SkinnedMeshExport[] = [];
+        // A user VRM keeps its own head, so the facecap Face mesh is omitted.
+        if (faceChk.checked && resampled.face && !hasUserBody()) {
+          const mesh = await loadFaceMeshData();
+          meshes.push(buildFaceMesh(resampled, mesh));
+        }
+        if (bodySel.value !== "none") {
+          // Recorded ARKit tracks + synthesized VRM-preset tracks, so both
+          // perfect-sync and standard VRMs get facial animation.
+          const augFace =
+            faceChk.checked && resampled.face ? augmentFaceForVrm(resampled.face) : undefined;
+          const body = await buildBodyData(
+            resampled.parents,
+            resampled.bindPos,
+            resampled.names,
+            augFace?.names,
+          );
+          meshes.push(...bodyToSkinnedMeshExports(body.meshes, augFace));
+        }
+        const fbx = writeAnimationFbx(resampled, {
+          takeName: sanitizeFilename(loaded.name),
+          names,
+          tposeRest: restSel.value === "tpose",
+          meshes,
+        });
+        downloadBytes(`${sanitizeFilename(loaded.name)}.fbx`, fbx);
       }
-      const fbx = writeAnimationFbx(resampled, {
-        takeName: sanitizeFilename(loaded.name),
-        names,
-        tposeRest: restSel.value === "tpose",
-        meshes,
-      });
-      downloadBytes(`${sanitizeFilename(loaded.name)}.fbx`, fbx);
     } catch (err) {
       showError(err instanceof Error ? err.message : String(err));
     } finally {
       downloadBtn.disabled = false;
-      downloadBtn.textContent = "Download FBX";
-    }
-  });
-
-  const downloadVrmaBtn = document.getElementById("downloadVrma") as HTMLButtonElement;
-  downloadVrmaBtn.addEventListener("click", async () => {
-    if (!loaded) return;
-    downloadVrmaBtn.disabled = true;
-    downloadVrmaBtn.textContent = "Generating…";
-    await new Promise((r) => setTimeout(r, 16));
-    try {
-      const fps = Number(fpsSel.value);
-      const trim = transport?.getTrim() ?? { start: 0, end: loaded.display.duration };
-      const resampled = resample(loaded.display, fps, trim.start, trim.end);
-      // Original ARKit tracks become custom expressions; the synthesized
-      // preset tracks (A/Blink/Look_*) fill the VRM presets.
-      const augFace =
-        faceChk.checked && resampled.face ? augmentFaceForVrm(resampled.face) : undefined;
-      const { writeVrma } = await import("./vrma/writeVrma.ts");
-      const vrma = writeVrma(resampled, augFace);
-      downloadBytes(`${sanitizeFilename(loaded.name)}.vrma`, vrma);
-    } catch (err) {
-      showError(err instanceof Error ? err.message : String(err));
-    } finally {
-      downloadVrmaBtn.disabled = false;
-      downloadVrmaBtn.textContent = "Download VRMA";
+      downloadBtn.textContent = "Download";
     }
   });
 

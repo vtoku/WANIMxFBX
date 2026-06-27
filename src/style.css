@@ -363,6 +363,27 @@ main:has(.loaded-state:not([hidden])) {
   margin-top: 0.75rem;
 }
 
+.download-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+.download-row select {
+  background: #232833;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 0.6rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.download-row .button.primary {
+  width: auto;
+  flex: 1;
+}
+
 code {
   background: #232833;
   border-radius: 4px;
