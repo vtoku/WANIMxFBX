@@ -5,7 +5,7 @@ import { cleanClip, type CleanOpts, type CleanStats } from "./convert/clean.ts";
 import {
   makeLayer, getTrack, setPosKey, setRotKey, deleteKeysAt, keyTimes,
   applyRigLayers, applyLayersToPose, poseAtFrame, nearestFrame,
-  effectorBaseWorld, effectorDef,
+  effectorBaseWorld, effectorDef, effectorColor, retimeKeys, keyFullPose,
   type RigLayer, type EffectorId, type Transient,
 } from "./rig/rig.ts";
 import { vsub, qconj } from "./convert/ik.ts";
@@ -164,6 +164,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       <div id="rigKeys" class="rig-keys"></div>
       <div class="rig-row">
         <button id="rigNeutral" class="button ghost" title="Keys the selected handle at its unadjusted position at the playhead. Put one before and after an adjustment to keep it local.">Neutral key</button>
+        <button id="rigKeyAll" class="button ghost" title="Keys every handle at the playhead, locking the whole pose at this moment so edits elsewhere can't disturb it.">Key pose</button>
         <button id="rigDelKey" class="button ghost" title="Removes the selected handle's key nearest the playhead.">Delete key</button>
       </div>
     </div>
@@ -471,6 +472,29 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
 
   function updateRigEditor() {
     const layer = rigLayers[activeLayerIdx];
+    // Timeline markers for the active layer (cleared when there is none).
+    const markers = layer
+      ? layer.tracks.flatMap((tr) =>
+          keyTimes(tr).map((t) => ({
+            time: t,
+            color: effectorColor(tr.effector),
+            selected: tr.effector === selectedEffector,
+            tag: tr.effector,
+          })),
+        )
+      : [];
+    transport?.setKeys(markers, {
+      onClick: (m) => preview?.selectEffector(m.tag as EffectorId),
+      onRetime: (m, newTime) => {
+        const lay = rigLayers[activeLayerIdx];
+        const tr = lay ? getTrack(lay, m.tag as EffectorId) : null;
+        if (!tr) return;
+        pushHistory();
+        retimeKeys(tr, m.time, newTime);
+        rebakeRig();
+        updateRigEditor();
+      },
+    });
     rigEditorEl.hidden = !layer;
     if (!layer) return;
     if (!selectedEffector) {
@@ -537,6 +561,23 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       mode.addEventListener("click", (e) => e.stopPropagation());
       mode.addEventListener("change", () => { pushHistory(); layer.mode = mode.value as RigLayer["mode"]; rebakeRig(); });
 
+      const extent = document.createElement("select");
+      extent.title = "Fade: keys ease in/out around the keyed range — one key is a local correction. Hold: the first/last key extends across the whole clip, MoBu style.";
+      for (const x of ["fade", "hold"] as const) {
+        const o = document.createElement("option");
+        o.value = x;
+        o.textContent = x;
+        if (layer.extent === x) o.selected = true;
+        extent.appendChild(o);
+      }
+      extent.addEventListener("click", (e) => e.stopPropagation());
+      extent.addEventListener("change", () => {
+        pushHistory();
+        layer.extent = extent.value as RigLayer["extent"];
+        renderRigLayers(); // fade slider visibility
+        rebakeRig();
+      });
+
       const weight = document.createElement("input");
       weight.type = "range";
       weight.min = "0"; weight.max = "100"; weight.step = "5";
@@ -553,6 +594,34 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         rebakeRig();
       });
 
+      // Second line: weight + (for fade layers) the fade-time slider.
+      const sub = document.createElement("div");
+      sub.className = "rig-sub";
+      const wLabel = document.createElement("span");
+      wLabel.textContent = "weight";
+      sub.append(wLabel, weight);
+      if (layer.extent === "fade") {
+        const fLabel = document.createElement("span");
+        fLabel.textContent = `fade ${layer.fadeS.toFixed(1)}s`;
+        const fade = document.createElement("input");
+        fade.type = "range";
+        fade.min = "0.1"; fade.max = "2"; fade.step = "0.1";
+        fade.value = String(layer.fadeS);
+        fade.title = "How long a correction eases in/out around its keys";
+        fade.addEventListener("click", (e) => e.stopPropagation());
+        let fadeSnap: string | null = null;
+        fade.addEventListener("input", () => {
+          fadeSnap ??= rigSnapshot();
+          layer.fadeS = Number(fade.value);
+          fLabel.textContent = `fade ${layer.fadeS.toFixed(1)}s`;
+        });
+        fade.addEventListener("change", () => {
+          if (fadeSnap) { pushHistorySnap(fadeSnap); fadeSnap = null; }
+          rebakeRig();
+        });
+        sub.append(fLabel, fade);
+      }
+
       const del = document.createElement("button");
       del.className = "rig-del";
       del.textContent = "×";
@@ -566,7 +635,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         rebakeRig();
       });
 
-      row.append(en, name, mode, weight, del);
+      row.append(en, name, mode, extent, del, sub);
       rigLayersEl.appendChild(row);
     });
     preview?.setRigEnabled(rigLayers.length > 0);
@@ -600,6 +669,16 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       if (def.canMove) setPosKey(track, t, base.pos);
       if (def.canRotate) setRotKey(track, t, base.rot);
     }
+    rebakeRig();
+    updateRigEditor();
+  });
+
+  (document.getElementById("rigKeyAll") as HTMLButtonElement).addEventListener("click", () => {
+    const layer = rigLayers[activeLayerIdx];
+    if (!layer || !rigBaseClip || !preview) return;
+    const t = preview.getTime();
+    pushHistory();
+    keyFullPose(rigBaseClip, rigLayers, activeLayerIdx, t, nearestFrame(rigBaseClip, t));
     rebakeRig();
     updateRigEditor();
   });
@@ -644,6 +723,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     onDragMove: (pos, rot) => {
       if (!dragCtx || !rigBaseClip) return;
       const layer = rigLayers[activeLayerIdx];
+      if (!layer) return; // deleted mid-drag; onDragEnd cleans up
       const def = effectorDef(dragCtx.transient.effector);
       if (rigGizmoSel.value === "translate" && def.canMove) {
         dragCtx.transient.pos = layer.mode === "additive" ? vsub(pos, dragCtx.base.pos) : pos;
@@ -657,6 +737,12 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     onDragEnd: () => {
       if (!dragCtx) return;
       const layer = rigLayers[activeLayerIdx];
+      if (!layer) {
+        // The layer was deleted mid-drag — drop the edit cleanly.
+        dragCtx = null;
+        preview?.setPoseOverride(null);
+        return;
+      }
       const track = getTrack(layer, dragCtx.transient.effector, true)!;
       if (dragCtx.transient.pos || dragCtx.transient.rot) pushHistory();
       if (dragCtx.transient.pos) setPosKey(track, dragCtx.t, dragCtx.transient.pos);

@@ -87,9 +87,14 @@ No unit-test framework yet — the three `npm run` scripts above are the regress
                           Layers = override/additive with weight, sparse pos/rot keys per effector. FK/IK cell set:
                           hips/hands/feet = IK spheres (move via convert/ik.ts solveTwoBone + rotate); spine, chest,
                           neck, head, shoulders, upper/lower arms and legs = FK octahedron cells (rotate-only — the
-                          generic non-chain branch in applyEffector handles any such bone). Keys lerp/slerp
-                          and HOLD past the ends (MoBu semantics — bracket local fixes with neutral keys). Additive
-                          keys store world-space deltas vs the stack below the layer. Order: modifiers → layers;
+                          generic non-chain branch in applyEffector handles any such bone). Keys lerp/slerp inside
+                          the keyed range; OUTSIDE it each layer picks an extent: "fade" (default — the adjustment
+                          smoothsteps to zero over fadeS seconds, so ONE key is a local correction) or "hold" (MoBu
+                          semantics, first/last key extends across the clip; bracket with neutral keys). Envelope =
+                          per-channel weight multiplier in applyLayersToPose. Additive keys store world-space deltas
+                          vs the stack below the layer. Key tools: timeline diamond markers on the transport (click
+                          = jump+select, drag = retime via retimeKeys), "Key pose" (keyFullPose keys every effector's
+                          current effective value — locks the pose, provably changes nothing). Order: modifiers → layers;
                           both apply to display AND all three exports (wanim path re-applies them to its own clip).
                           Viewport: effector handles + TransformControls gizmo (drag = live single-frame solve via
                           setPoseOverride, key lands at the playhead on release, full rebake async). Undo/redo =

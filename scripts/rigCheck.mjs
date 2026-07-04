@@ -9,7 +9,7 @@
 import { readFileSync } from "node:fs";
 const { parseWanim } = await import("../src/wanim/parse.ts");
 const { convertCharacter } = await import("../src/convert/clip.ts");
-const { makeLayer, getTrack, setPosKey, setRotKey, applyRigLayers, poseAtFrame, nearestFrame } =
+const { makeLayer, getTrack, setPosKey, setRotKey, applyRigLayers, poseAtFrame, nearestFrame, retimeKeys, keyFullPose } =
   await import("../src/rig/rig.ts");
 const { worldFromLocal } = await import("../src/convert/fk.ts");
 
@@ -39,9 +39,10 @@ const tKey = 5;
 const fKey = nearestFrame(c, tKey);
 const f0 = 0;
 
-// --- 1. additive key offsets the hand, and holds across the whole clip -----
+// --- 1. additive key offsets the hand; HOLD extends it across the clip -----
 {
   const layer = makeLayer("L1");
+  layer.extent = "hold";
   setPosKey(getTrack(layer, "rightHand", true), tKey, [0.06, 0.04, 0]);
   const baked = applyRigLayers(c, [layer]);
   const dAtKey = dist(world(baked, fKey).pos[hand], world(c, fKey).pos[hand]);
@@ -49,8 +50,51 @@ const f0 = 0;
   const expect = Math.hypot(0.06, 0.04);
   check("additive: hand moves by the delta at the key",
     Math.abs(dAtKey - expect) < 0.004, `moved ${mm(dAtKey)}mm expect ${mm(expect)}mm`);
-  check("additive: single key HOLDS at clip start",
+  check("additive hold: single key HOLDS at clip start",
     Math.abs(dAtStart - expect) < 0.006, `moved ${mm(dAtStart)}mm at t=0`);
+}
+
+// --- 1b. fade extent: a single key is a LOCAL correction --------------------
+{
+  const layer = makeLayer("L1"); // default fade, 0.5s
+  setPosKey(getTrack(layer, "rightHand", true), tKey, [0.06, 0.04, 0]);
+  const baked = applyRigLayers(c, [layer]);
+  const expect = Math.hypot(0.06, 0.04);
+  const dAtKey = dist(world(baked, fKey).pos[hand], world(c, fKey).pos[hand]);
+  const fMid = nearestFrame(c, tKey + 0.25);
+  const dMid = dist(world(baked, fMid).pos[hand], world(c, fMid).pos[hand]);
+  const fOut = nearestFrame(c, tKey + 1.0);
+  const dOut = dist(world(baked, fOut).pos[hand], world(c, fOut).pos[hand]);
+  const dStart = dist(world(baked, f0).pos[hand], world(c, f0).pos[hand]);
+  check("fade: full delta at the key", Math.abs(dAtKey - expect) < 0.004, `moved ${mm(dAtKey)}mm`);
+  check("fade: partial mid-fade, zero outside",
+    dMid > expect * 0.2 && dMid < expect * 0.85 && dOut < 0.001 && dStart < 0.001,
+    `mid ${mm(dMid)}mm, +1s ${mm(dOut)}mm, t=0 ${mm(dStart)}mm`);
+
+  // retime: move the key +2s — influence follows
+  retimeKeys(getTrack(layer, "rightHand"), tKey, tKey + 2);
+  const baked2 = applyRigLayers(c, [layer]);
+  const fNew = nearestFrame(c, tKey + 2);
+  const dNew = dist(world(baked2, fNew).pos[hand], world(c, fNew).pos[hand]);
+  const dOld = dist(world(baked2, fKey).pos[hand], world(c, fKey).pos[hand]);
+  check("retime: key moved in time", Math.abs(dNew - expect) < 0.004 && dOld < 0.001,
+    `new ${mm(dNew)}mm, old spot ${mm(dOld)}mm`);
+}
+
+// --- 1c. key full pose: locking the pose changes nothing ---------------------
+{
+  const layer = makeLayer("L1");
+  const layers = [layer];
+  keyFullPose(c, layers, 0, tKey, fKey);
+  const nTracks = layer.tracks.length;
+  const baked = applyRigLayers(c, layers);
+  let worst = 0;
+  for (let b = 0; b < c.names.length; b++) {
+    if (c.localQuat[b].some((q) => Math.hypot(...q) < 0.5)) continue; // dead bones
+    worst = Math.max(worst, dist(world(baked, fKey).pos[b], world(c, fKey).pos[b]));
+  }
+  check("key full pose: keys every effector, pose unchanged",
+    nTracks >= 17 && worst < 0.002, `${nTracks} tracks, worst drift ${mm(worst)}mm`);
 }
 
 // --- 2. neutral keys keep the adjustment local ------------------------------

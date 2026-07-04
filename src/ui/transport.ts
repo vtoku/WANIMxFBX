@@ -1,8 +1,25 @@
 import type { PreviewScene, PlaybackState } from "../preview/scene.ts";
 
+export interface TransportKeyMarker {
+  time: number;
+  color: string;
+  selected: boolean;
+  /** Opaque tag handed back in callbacks (the effector id). */
+  tag: string;
+}
+
+export interface TransportKeyCallbacks {
+  /** Marker clicked (no drag): jump happened; select the effector etc. */
+  onClick(marker: TransportKeyMarker): void;
+  /** Marker dragged to a new time and released. */
+  onRetime(marker: TransportKeyMarker, newTime: number): void;
+}
+
 export interface Transport {
   element: HTMLElement;
   getTrim(): { start: number; end: number };
+  /** Show rig-layer key markers on the timeline (replaces the previous set). */
+  setKeys(markers: TransportKeyMarker[], cbs?: TransportKeyCallbacks): void;
   dispose(): void;
 }
 
@@ -28,6 +45,7 @@ export function createTransport(preview: PreviewScene, duration: number): Transp
     <button class="t-btn t-play" aria-label="Play/pause">⏸</button>
     <div class="t-timeline" role="slider" tabindex="0" aria-label="Timeline and trim">
       <div class="t-region"></div>
+      <div class="t-keys"></div>
       <div class="t-handle t-in" aria-label="Trim start"></div>
       <div class="t-handle t-out" aria-label="Trim end"></div>
       <div class="t-playhead"></div>
@@ -126,9 +144,52 @@ export function createTransport(preview: PreviewScene, duration: number): Transp
   renderTrim();
   applyTrim();
 
+  // ---- rig key markers ----------------------------------------------------
+  const keysEl = el.querySelector(".t-keys") as HTMLElement;
+  function setKeys(markers: TransportKeyMarker[], cbs?: TransportKeyCallbacks) {
+    keysEl.innerHTML = "";
+    for (const m of markers) {
+      const dot = document.createElement("span");
+      dot.className = "t-key" + (m.selected ? " sel" : "");
+      dot.style.left = `${pct(m.time)}%`;
+      dot.style.background = m.color;
+      dot.title = `${m.tag} key @ ${fmt(m.time)} — click to jump, drag to retime`;
+      // Click = jump + select; drag past a few px = retime on release.
+      dot.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const startX = e.clientX;
+        let moved = false;
+        let newTime = m.time;
+        const move = (ev: PointerEvent) => {
+          if (!moved && Math.abs(ev.clientX - startX) < 4) return;
+          moved = true;
+          newTime = timeAt(ev.clientX);
+          dot.style.left = `${pct(newTime)}%`;
+          preview.pause();
+          preview.seek(newTime);
+        };
+        const up = () => {
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", up);
+          if (moved) cbs?.onRetime(m, newTime);
+          else {
+            preview.pause();
+            preview.seek(m.time);
+            cbs?.onClick(m);
+          }
+        };
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", up);
+      });
+      keysEl.appendChild(dot);
+    }
+  }
+
   return {
     element: el,
     getTrim: () => ({ start: trimStart, end: trimEnd }),
+    setKeys,
     dispose: () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);

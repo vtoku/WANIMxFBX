@@ -254,6 +254,34 @@ main:has(.loaded-state:not([hidden])) {
   pointer-events: none;
 }
 
+.t-keys {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.t-key {
+  position: absolute;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  transform: translate(-50%, -50%) rotate(45deg);
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+  cursor: grab;
+  opacity: 0.85;
+  touch-action: none;
+}
+
+.t-key.sel {
+  width: 11px;
+  height: 11px;
+  opacity: 1;
+  box-shadow: 0 0 5px rgba(255, 255, 255, 0.7);
+  z-index: 1;
+}
+
 .t-time {
   font-variant-numeric: tabular-nums;
   font-size: 0.78rem;
@@ -307,6 +335,7 @@ main:has(.loaded-state:not([hidden])) {
 
 .rig-layer {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.45rem;
   padding: 0.35rem 0.5rem;
@@ -314,6 +343,24 @@ main:has(.loaded-state:not([hidden])) {
   border-radius: 6px;
   cursor: pointer;
   font-size: 0.85rem;
+}
+
+.rig-sub {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.rig-sub input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.rig-sub span {
+  white-space: nowrap;
 }
 
 .rig-layer.active {

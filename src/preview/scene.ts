@@ -5,7 +5,7 @@ import { bindWorldPositions, type ConvertedClip } from "../convert/clip.ts";
 import { buildBodyData } from "../convert/body.ts";
 import { augmentFaceForVrm } from "../convert/vrmFaceMap.ts";
 import { buildBodyMeshes } from "./body.ts";
-import { EFFECTORS, type EffectorId } from "../rig/rig.ts";
+import { EFFECTORS, effectorColor, type EffectorId } from "../rig/rig.ts";
 import type { FramePose } from "../convert/fk.ts";
 import type { Quat, Vec3 } from "../wanim/parse.ts";
 
@@ -470,12 +470,6 @@ export class PreviewScene {
     this.rigCbs?.onSelect(effector);
   }
 
-  private handleColor(id: EffectorId): number {
-    if (id === "hips") return 0xffaa33;
-    if (id === "head" || id === "neck" || id === "spine" || id === "chest") return 0xccee66;
-    return id.startsWith("left") ? 0x5599ff : 0xff5588;
-  }
-
   private attachRig() {
     if (!this.rigEnabled || !this.clip) return;
     this.detachRig();
@@ -490,7 +484,7 @@ export class PreviewScene {
       const mesh = new THREE.Mesh(
         geo,
         new THREE.MeshBasicMaterial({
-          color: this.handleColor(def.id),
+          color: effectorColor(def.id),
           transparent: true,
           opacity: def.canMove ? 0.55 : 0.4,
           depthTest: false,
