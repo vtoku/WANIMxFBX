@@ -1,9 +1,13 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { bindWorldPositions, type ConvertedClip } from "../convert/clip.ts";
 import { buildBodyData } from "../convert/body.ts";
 import { augmentFaceForVrm } from "../convert/vrmFaceMap.ts";
 import { buildBodyMeshes } from "./body.ts";
+import { EFFECTORS, type EffectorId } from "../rig/rig.ts";
+import type { FramePose } from "../convert/fk.ts";
+import type { Quat, Vec3 } from "../wanim/parse.ts";
 
 export type BodyMode = "human" | "none";
 import { FaceOverlay } from "./face.ts";
@@ -17,6 +21,15 @@ export interface PlaybackState {
   playing: boolean;
   trimStart: number;
   trimEnd: number;
+}
+
+/** Control-rig hooks: the app owns the layers; the scene owns picking/gizmo. */
+export interface RigCallbacks {
+  onSelect(effector: EffectorId | null): void;
+  /** Return false to refuse the drag (e.g. no active layer). */
+  onDragStart(effector: EffectorId): boolean;
+  onDragMove(pos: Vec3, rot: Quat): void;
+  onDragEnd(): void;
 }
 
 /**
@@ -52,6 +65,18 @@ export class PreviewScene {
   private trimEnd = 0;
   private onState: ((s: PlaybackState) => void) | null = null;
 
+  // ---- control rig -------------------------------------------------------
+  private rigEnabled = false;
+  private rigHandles = new Map<EffectorId, THREE.Mesh>();
+  private rigSelected: EffectorId | null = null;
+  private gizmo: TransformControls | null = null;
+  private gizmoProxy = new THREE.Object3D();
+  private gizmoDragging = false;
+  private rigCbs: RigCallbacks | null = null;
+  private poseOverride: FramePose | null = null;
+  private raycaster = new THREE.Raycaster();
+  private pointerNdc = new THREE.Vector2();
+
   private ro: ResizeObserver;
   private rafId = 0;
 
@@ -76,6 +101,20 @@ export class PreviewScene {
       new THREE.AmbientLight(0xffffff, 0.6),
     );
     this.scene.add(new THREE.GridHelper(10, 20, 0x2a2f3a, 0x1b1f27));
+
+    // Rig picking: hovering a handle (or the gizmo) parks OrbitControls so
+    // the click selects/drags instead of tumbling the camera.
+    this.renderer.domElement.addEventListener("pointermove", (ev) => {
+      if (this.gizmoDragging) return;
+      const hover = this.pickHandle(ev);
+      const overGizmo = !!(this.gizmo && (this.gizmo as unknown as { axis: string | null }).axis);
+      this.controls.enabled = !hover && !overGizmo;
+    });
+    this.renderer.domElement.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== 0 || this.gizmoDragging) return;
+      const hit = this.pickHandle(ev);
+      if (hit) this.selectEffector(hit);
+    });
 
     this.ro = new ResizeObserver(() => this.resize());
     this.ro.observe(container);
@@ -235,6 +274,7 @@ export class PreviewScene {
     this.faceWeights = clip.face ? new Float32Array(clip.face.names.length) : null;
     this.attachFace();
     this.attachBody(clip);
+    this.attachRig();
 
     this.trimStart = 0;
     this.trimEnd = clip.duration;
@@ -292,9 +332,9 @@ export class PreviewScene {
     }
   }
 
-  private applyPose(time: number) {
+  /** Redraw the stick figure + rig handles from the bones' current world state. */
+  private redrawOverlays() {
     if (!this.boneRoot || !this.lines || !this.joints) return;
-    this.sampleInto(time);
     this.boneRoot.updateMatrixWorld(true);
 
     const linePos = this.lines.geometry.getAttribute("position") as THREE.BufferAttribute;
@@ -313,6 +353,14 @@ export class PreviewScene {
       jointPos.setXYZ(i, wp.x, wp.y, wp.z);
     }
     jointPos.needsUpdate = true;
+    this.updateRigHandles();
+  }
+
+  private applyPose(time: number) {
+    if (!this.boneRoot || !this.lines || !this.joints) return;
+    if (this.poseOverride) return; // live drag owns the pose right now
+    this.sampleInto(time);
+    this.redrawOverlays();
 
     // Drive the face blendshapes from the recorded weights at this time.
     if (this.faceWeights && this.clip?.face) {
@@ -343,6 +391,191 @@ export class PreviewScene {
         });
       }
     }
+  }
+
+  // ---- control rig -------------------------------------------------------
+
+  setRigCallbacks(cbs: RigCallbacks | null) {
+    this.rigCbs = cbs;
+  }
+
+  /** Show/hide the effector handles (and lazily create the gizmo). */
+  setRigEnabled(on: boolean) {
+    if (this.rigEnabled === on) return;
+    this.rigEnabled = on;
+    if (on) {
+      this.attachRig();
+    } else {
+      this.selectEffector(null);
+      this.detachRig();
+    }
+  }
+
+  setGizmoMode(mode: "translate" | "rotate") {
+    this.gizmo?.setMode(mode);
+  }
+
+  getSelectedEffector(): EffectorId | null {
+    return this.rigSelected;
+  }
+
+  getTime(): number {
+    return this.time;
+  }
+
+  /** World transform of an effector's bone in the CURRENTLY displayed pose. */
+  getEffectorWorld(effector: EffectorId): { pos: Vec3; rot: Quat } | null {
+    const def = EFFECTORS.find((e) => e.id === effector);
+    const node = def ? this.boneNodes[this.clip?.names.indexOf(def.bone) ?? -1] : null;
+    if (!node) return null;
+    const p = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    node.getWorldPosition(p);
+    node.getWorldQuaternion(q);
+    return { pos: [p.x, p.y, p.z], rot: [q.x, q.y, q.z, q.w] };
+  }
+
+  /**
+   * Show a hand-built single-frame pose (live IK while dragging) instead of
+   * the clip's tracks. Pass null to fall back to the clip.
+   */
+  setPoseOverride(pose: FramePose | null) {
+    this.poseOverride = pose;
+    if (pose) {
+      for (let b = 0; b < this.boneNodes.length; b++) {
+        const node = this.boneNodes[b];
+        node.position.set(pose.pos[b][0], pose.pos[b][1], pose.pos[b][2]);
+        node.quaternion.set(pose.quat[b][0], pose.quat[b][1], pose.quat[b][2], pose.quat[b][3]);
+      }
+      this.redrawOverlays();
+    } else {
+      this.applyPose(this.time);
+    }
+  }
+
+  selectEffector(effector: EffectorId | null) {
+    if (this.rigSelected === effector) return;
+    this.rigSelected = effector;
+    for (const [id, mesh] of this.rigHandles) {
+      (mesh.material as THREE.MeshBasicMaterial).opacity = id === effector ? 1 : 0.55;
+      mesh.scale.setScalar(id === effector ? 1.35 : 1);
+    }
+    if (effector && this.gizmo) {
+      this.syncProxy();
+      this.gizmo.attach(this.gizmoProxy);
+    } else {
+      this.gizmo?.detach();
+    }
+    this.rigCbs?.onSelect(effector);
+  }
+
+  private handleColor(id: EffectorId): number {
+    if (id === "hips") return 0xffaa33;
+    if (id === "head") return 0xccee66;
+    return id.startsWith("left") ? 0x5599ff : 0xff5588;
+  }
+
+  private attachRig() {
+    if (!this.rigEnabled || !this.clip) return;
+    this.detachRig();
+    for (const def of EFFECTORS) {
+      const bone = this.clip.names.indexOf(def.bone);
+      if (bone < 0 || !this.boneNodes[bone]) continue;
+      const mesh = new THREE.Mesh(
+        new THREE.SphereGeometry(def.id === "hips" ? 0.045 : 0.032, 16, 12),
+        new THREE.MeshBasicMaterial({
+          color: this.handleColor(def.id),
+          transparent: true,
+          opacity: 0.55,
+          depthTest: false,
+        }),
+      );
+      mesh.renderOrder = 10;
+      mesh.userData.effector = def.id;
+      this.scene.add(mesh);
+      this.rigHandles.set(def.id, mesh);
+    }
+    if (!this.gizmo) {
+      this.scene.add(this.gizmoProxy);
+      this.gizmo = new TransformControls(this.camera, this.renderer.domElement);
+      this.gizmo.size = 0.65;
+      const helper = this.gizmo.getHelper();
+      helper.renderOrder = 20;
+      this.scene.add(helper);
+      this.gizmo.addEventListener("dragging-changed", (e) => {
+        const dragging = e.value as boolean;
+        this.controls.enabled = !dragging;
+        if (dragging) {
+          if (this.rigSelected && this.rigCbs?.onDragStart(this.rigSelected)) {
+            this.gizmoDragging = true;
+            this.pause();
+          } else {
+            this.gizmo?.detach(); // refused — cancel the interaction
+          }
+        } else if (this.gizmoDragging) {
+          this.gizmoDragging = false;
+          this.rigCbs?.onDragEnd();
+          if (this.rigSelected) this.gizmo?.attach(this.gizmoProxy);
+        }
+      });
+      this.gizmo.addEventListener("objectChange", () => {
+        if (!this.gizmoDragging) return;
+        const p = this.gizmoProxy.position;
+        const q = this.gizmoProxy.quaternion;
+        this.rigCbs?.onDragMove([p.x, p.y, p.z], [q.x, q.y, q.z, q.w]);
+      });
+    }
+    // Re-select across a setClip rebuild.
+    if (this.rigSelected && this.rigHandles.has(this.rigSelected)) {
+      const sel = this.rigSelected;
+      this.rigSelected = null;
+      this.selectEffector(sel);
+    }
+    this.updateRigHandles();
+  }
+
+  private detachRig() {
+    for (const mesh of this.rigHandles.values()) {
+      this.scene.remove(mesh);
+      mesh.geometry.dispose();
+      (mesh.material as THREE.Material).dispose();
+    }
+    this.rigHandles.clear();
+    this.gizmo?.detach();
+  }
+
+  /** Keep handles + gizmo proxy glued to the displayed skeleton. */
+  private updateRigHandles() {
+    if (!this.rigHandles.size || !this.clip) return;
+    const wp = new THREE.Vector3();
+    for (const [id, mesh] of this.rigHandles) {
+      const def = EFFECTORS.find((e) => e.id === id)!;
+      const node = this.boneNodes[this.clip.names.indexOf(def.bone)];
+      if (!node) continue;
+      node.getWorldPosition(wp);
+      mesh.position.copy(wp);
+    }
+    if (!this.gizmoDragging) this.syncProxy();
+  }
+
+  private syncProxy() {
+    if (!this.rigSelected) return;
+    const w = this.getEffectorWorld(this.rigSelected);
+    if (!w) return;
+    this.gizmoProxy.position.set(w.pos[0], w.pos[1], w.pos[2]);
+    this.gizmoProxy.quaternion.set(w.rot[0], w.rot[1], w.rot[2], w.rot[3]);
+  }
+
+  private pickHandle(ev: PointerEvent): EffectorId | null {
+    if (!this.rigHandles.size) return null;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.pointerNdc.set(
+      ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+      -((ev.clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(this.pointerNdc, this.camera);
+    const hits = this.raycaster.intersectObjects([...this.rigHandles.values()], false);
+    return hits.length ? (hits[0].object.userData.effector as EffectorId) : null;
   }
 
   private frameCamera() {
@@ -415,6 +648,8 @@ export class PreviewScene {
   }
 
   private clearClip() {
+    this.detachRig();
+    this.poseOverride = null;
     this.clearBody();
     if (this.boneRoot) {
       this.scene.remove(this.boneRoot);
@@ -439,6 +674,8 @@ export class PreviewScene {
   dispose() {
     cancelAnimationFrame(this.rafId);
     this.ro.disconnect();
+    this.gizmo?.dispose();
+    this.gizmo = null;
     this.clearClip();
     this.face?.group.parent?.remove(this.face.group);
     this.face?.dispose();

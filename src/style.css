@@ -292,6 +292,118 @@ main:has(.loaded-state:not([hidden])) {
   color: #7fb2ff;
 }
 
+.hint {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  margin: 0.2rem 0 0.6rem;
+  line-height: 1.4;
+}
+
+.rig-layers {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.rig-layer {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.rig-layer.active {
+  border-color: #7fb2ff;
+}
+
+.rig-layer .rig-name {
+  flex: 0 0 auto;
+}
+
+.rig-layer select {
+  background: #232833;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.15rem 0.25rem;
+  font-size: 0.8rem;
+}
+
+.rig-layer input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.rig-layer .rig-del {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0 0.2rem;
+}
+
+.rig-layer .rig-del:hover {
+  color: #ff6688;
+}
+
+.rig-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0.6rem 0;
+}
+
+.rig-row .button {
+  flex: 1;
+}
+
+.rig-row select {
+  background: #232833;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+}
+
+.rig-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0.4rem 0;
+}
+
+.rig-key {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  font-size: 0.75rem;
+}
+
+.rig-key button {
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  padding: 0.15rem 0.2rem 0.15rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+.rig-key button + button {
+  color: var(--text-dim);
+  padding: 0.15rem 0.45rem 0.15rem 0.1rem;
+}
+
+.rig-key button + button:hover {
+  color: #ff6688;
+}
+
 .field.sub {
   padding-left: 0.8rem;
   font-size: 0.85rem;

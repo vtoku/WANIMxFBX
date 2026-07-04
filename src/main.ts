@@ -2,6 +2,16 @@ import "./style.css";
 import { parseWanim, BONE_COUNT, type WanimClip } from "./wanim/parse.ts";
 import { convertCharacter, resample, retargetProportions, distributeBonelessSpine, type ConvertedClip } from "./convert/clip.ts";
 import { cleanClip, type CleanOpts, type CleanStats } from "./convert/clean.ts";
+import {
+  makeLayer, getTrack, setPosKey, setRotKey, deleteKeysAt, keyTimes,
+  applyRigLayers, applyLayersToPose, poseAtFrame, nearestFrame,
+  effectorBaseWorld, effectorDef,
+  type RigLayer, type EffectorId, type Transient,
+} from "./rig/rig.ts";
+import { vsub, qconj } from "./convert/ik.ts";
+import { applyModifiers, defaultModifiers } from "./rig/modifiers.ts";
+import { quatMul } from "./convert/quat.ts";
+import type { Vec3, Quat } from "./wanim/parse.ts";
 import { writeAnimationFbx, type SkinnedMeshExport } from "./fbx/animationFbx.ts";
 import { remapNames, type NameScheme } from "./convert/skeleton.ts";
 import { buildFaceMesh } from "./convert/meshExport.ts";
@@ -122,6 +132,50 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       <input id="cutoff" type="range" min="1" max="15" step="0.5" value="7" title="Lower = smoother but mushier. Anything faster than this many shakes per second is treated as noise." />
     </label>
     <p id="cleanStats" class="clean-stats"></p>
+
+    <h3 class="section">Control rig</h3>
+    <p class="hint">Adjustment layers, MotionBuilder style. Add a layer, pause, then
+      drag a colored handle on the figure; a key lands at the playhead. Keys hold
+      until the next key, so bracket a local fix with neutral keys.</p>
+    <div id="rigLayers" class="rig-layers"></div>
+    <div class="rig-row">
+      <button id="rigAdd" class="button ghost">Add layer</button>
+      <select id="rigGizmo" title="What the viewport gizmo edits. Hands and feet move with IK; the head only rotates.">
+        <option value="translate" selected>Move</option>
+        <option value="rotate">Rotate</option>
+      </select>
+    </div>
+    <div id="rigEditor" hidden>
+      <p id="rigSel" class="clean-stats"></p>
+      <div id="rigKeys" class="rig-keys"></div>
+      <div class="rig-row">
+        <button id="rigNeutral" class="button ghost" title="Keys the selected handle at its unadjusted position at the playhead. Put one before and after an adjustment to keep it local.">Neutral key</button>
+        <button id="rigDelKey" class="button ghost" title="Removes the selected handle's key nearest the playhead.">Delete key</button>
+      </div>
+    </div>
+
+    <h3 class="section">Modifiers</h3>
+    <p class="hint">Whole-clip corrections, no keys needed. Hips keeps the feet
+      planted; knees and elbows swing without moving hips, feet, or hands.</p>
+    <label class="field sub">
+      <span>Hips height <output id="modHipsVal">0 cm</output></span>
+      <input id="modHips" type="range" min="-30" max="30" step="1" value="0" title="Raise or lower the hips; the legs re-solve so the feet stay where they are." />
+    </label>
+    <label class="field sub">
+      <span>Knees in/out <output id="modKneesVal">0°</output></span>
+      <input id="modKnees" type="range" min="-30" max="30" step="1" value="0" title="Swing the knees apart (+) or together (−). Hips and feet don't move." />
+    </label>
+    <label class="field sub">
+      <span>Elbows in/out <output id="modElbowsVal">0°</output></span>
+      <input id="modElbows" type="range" min="-30" max="30" step="1" value="0" title="Swing the elbows away from (+) or toward (−) the body. Shoulders and hands don't move." />
+    </label>
+    <label class="field sub">
+      <span>Stance width <output id="modFeetVal">0 cm</output></span>
+      <input id="modFeet" type="range" min="-20" max="20" step="1" value="0" title="Plant the feet wider (+) or narrower (−)." />
+    </label>
+    <div class="rig-row">
+      <button id="modReset" class="button ghost">Reset modifiers</button>
+    </div>
 
     <h3 class="section">Export</h3>
     <label class="field">
@@ -268,11 +322,20 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     // After proportions (which would reset a dead bone's bind): spread a spine
     // bend concentrated on one joint by a missing upper-chest bone.
     if (distSpineChk.checked) display = distributeBonelessSpine(display, Number(distSpineAmt.value) / 100);
+    if (withCleaning) {
+      // Modifiers, then control-rig layers on top; the compare view stays raw.
+      display = applyModifiers(display, mods);
+      rigBaseClip = display;
+      return applyRigLayers(display, rigLayers);
+    }
     return display;
   }
 
   let compareBase: ConvertedClip | null = null; // uncleaned display for compare
   let compareGen = 0; // invalidates in-flight prebuilds when options change
+  const rigLayers: RigLayer[] = []; // control-rig adjustment layers
+  let rigBaseClip: ConvertedClip | null = null; // display BEFORE rig layers
+  const mods = defaultModifiers(); // whole-clip parametric corrections
 
   async function reclean() {
     if (!loaded || !preview) return;
@@ -315,6 +378,242 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   for (const ev of ["pointerup", "pointerleave", "pointercancel"] as const) {
     compareBtn.addEventListener(ev, endCompare);
   }
+
+  // ---- control rig -------------------------------------------------------
+  // (rigLayers/rigBaseClip are declared with the pipeline state above the
+  // compare block; the closures in buildDisplay/export read them.)
+  const rigLayersEl = document.getElementById("rigLayers") as HTMLDivElement;
+  const rigAddBtn = document.getElementById("rigAdd") as HTMLButtonElement;
+  const rigGizmoSel = document.getElementById("rigGizmo") as HTMLSelectElement;
+  const rigEditorEl = document.getElementById("rigEditor") as HTMLDivElement;
+  const rigSelEl = document.getElementById("rigSel") as HTMLParagraphElement;
+  const rigKeysEl = document.getElementById("rigKeys") as HTMLDivElement;
+  const rigNeutralBtn = document.getElementById("rigNeutral") as HTMLButtonElement;
+  const rigDelKeyBtn = document.getElementById("rigDelKey") as HTMLButtonElement;
+
+  let activeLayerIdx = -1;
+  let selectedEffector: EffectorId | null = null;
+  let layerCounter = 0;
+
+  /** Rebake layers onto the (unchanged) base — cheaper than a full reclean. */
+  function rebakeRig() {
+    if (!loaded || !preview || !rigBaseClip) return;
+    const display = applyRigLayers(rigBaseClip, rigLayers);
+    loaded.display = display;
+    showClip(display);
+  }
+
+  function updateRigEditor() {
+    const layer = rigLayers[activeLayerIdx];
+    rigEditorEl.hidden = !layer;
+    if (!layer) return;
+    if (!selectedEffector) {
+      rigSelEl.textContent = "Click a colored handle on the figure to pose it.";
+      rigKeysEl.innerHTML = "";
+      return;
+    }
+    const def = effectorDef(selectedEffector);
+    const track = getTrack(layer, selectedEffector);
+    const times = track ? keyTimes(track) : [];
+    rigSelEl.textContent = `${def.label} on ${layer.name} · ${times.length} key${times.length === 1 ? "" : "s"}`;
+    rigKeysEl.innerHTML = "";
+    for (const t of times) {
+      const chip = document.createElement("span");
+      chip.className = "rig-key";
+      const label = document.createElement("button");
+      label.textContent = fmtTime(t);
+      label.title = "Jump to this key";
+      label.addEventListener("click", () => { preview?.pause(); preview?.seek(t); });
+      const del = document.createElement("button");
+      del.textContent = "×";
+      del.title = "Delete this key";
+      del.addEventListener("click", () => {
+        if (track) deleteKeysAt(track, t, 1 / 120);
+        rebakeRig();
+        updateRigEditor();
+      });
+      chip.append(label, del);
+      rigKeysEl.appendChild(chip);
+    }
+  }
+
+  function renderRigLayers() {
+    rigLayersEl.innerHTML = "";
+    rigLayers.forEach((layer, i) => {
+      const row = document.createElement("div");
+      row.className = "rig-layer" + (i === activeLayerIdx ? " active" : "");
+      row.addEventListener("click", () => {
+        if (activeLayerIdx !== i) { activeLayerIdx = i; renderRigLayers(); }
+      });
+
+      const en = document.createElement("input");
+      en.type = "checkbox";
+      en.checked = layer.enabled;
+      en.title = "Mute/unmute this layer";
+      en.addEventListener("click", (e) => e.stopPropagation());
+      en.addEventListener("change", () => { layer.enabled = en.checked; rebakeRig(); });
+
+      const name = document.createElement("span");
+      name.className = "rig-name";
+      name.textContent = layer.name;
+
+      const mode = document.createElement("select");
+      mode.title = "Additive nudges the motion by a delta; override replaces it with the keyed pose (scaled by weight).";
+      for (const m of ["additive", "override"] as const) {
+        const o = document.createElement("option");
+        o.value = m;
+        o.textContent = m;
+        if (layer.mode === m) o.selected = true;
+        mode.appendChild(o);
+      }
+      mode.addEventListener("click", (e) => e.stopPropagation());
+      mode.addEventListener("change", () => { layer.mode = mode.value as RigLayer["mode"]; rebakeRig(); });
+
+      const weight = document.createElement("input");
+      weight.type = "range";
+      weight.min = "0"; weight.max = "100"; weight.step = "5";
+      weight.value = String(Math.round(layer.weight * 100));
+      weight.title = "Layer weight";
+      weight.addEventListener("click", (e) => e.stopPropagation());
+      weight.addEventListener("input", () => { layer.weight = Number(weight.value) / 100; });
+      weight.addEventListener("change", () => rebakeRig());
+
+      const del = document.createElement("button");
+      del.className = "rig-del";
+      del.textContent = "×";
+      del.title = "Delete this layer and its keys";
+      del.addEventListener("click", (e) => {
+        e.stopPropagation();
+        rigLayers.splice(i, 1);
+        if (activeLayerIdx >= rigLayers.length) activeLayerIdx = rigLayers.length - 1;
+        renderRigLayers();
+        rebakeRig();
+      });
+
+      row.append(en, name, mode, weight, del);
+      rigLayersEl.appendChild(row);
+    });
+    preview?.setRigEnabled(rigLayers.length > 0);
+    updateRigEditor();
+  }
+
+  rigAddBtn.addEventListener("click", () => {
+    rigLayers.push(makeLayer(`Layer ${++layerCounter}`));
+    activeLayerIdx = rigLayers.length - 1;
+    renderRigLayers();
+  });
+
+  rigGizmoSel.addEventListener("change", () => {
+    preview?.setGizmoMode(rigGizmoSel.value as "translate" | "rotate");
+  });
+
+  rigNeutralBtn.addEventListener("click", () => {
+    const layer = rigLayers[activeLayerIdx];
+    if (!layer || !selectedEffector || !rigBaseClip || !preview) return;
+    const def = effectorDef(selectedEffector);
+    const t = preview.getTime();
+    const f = nearestFrame(rigBaseClip, t);
+    const track = getTrack(layer, selectedEffector, true)!;
+    if (layer.mode === "additive") {
+      if (def.canMove) setPosKey(track, t, [0, 0, 0]);
+      if (def.canRotate) setRotKey(track, t, [0, 0, 0, 1]);
+    } else {
+      const base = effectorBaseWorld(rigBaseClip, rigLayers, activeLayerIdx, selectedEffector, f);
+      if (def.canMove) setPosKey(track, t, base.pos);
+      if (def.canRotate) setRotKey(track, t, base.rot);
+    }
+    rebakeRig();
+    updateRigEditor();
+  });
+
+  rigDelKeyBtn.addEventListener("click", () => {
+    const layer = rigLayers[activeLayerIdx];
+    if (!layer || !selectedEffector || !preview) return;
+    const track = getTrack(layer, selectedEffector);
+    if (!track) return;
+    const t = preview.getTime();
+    const near = keyTimes(track).reduce<number | null>(
+      (best, k) => (best === null || Math.abs(k - t) < Math.abs(best - t) ? k : best), null);
+    if (near === null || Math.abs(near - t) > 0.5) return; // nothing near the playhead
+    deleteKeysAt(track, near, 1 / 120);
+    rebakeRig();
+    updateRigEditor();
+  });
+
+  // Viewport drag → live single-frame solve → key on release.
+  let dragCtx: { f: number; t: number; base: { pos: Vec3; rot: Quat }; transient: Transient } | null = null;
+  preview?.setRigCallbacks({
+    onSelect: (e) => {
+      selectedEffector = e;
+      if (e && !effectorDef(e).canMove && rigGizmoSel.value === "translate") {
+        rigGizmoSel.value = "rotate"; // head only rotates
+        preview?.setGizmoMode("rotate");
+      }
+      updateRigEditor();
+    },
+    onDragStart: (e) => {
+      if (!loaded || !rigBaseClip || activeLayerIdx < 0) return false;
+      const layer = rigLayers[activeLayerIdx];
+      if (!layer.enabled) return false;
+      getTrack(layer, e, true);
+      const t = preview!.getTime();
+      const f = nearestFrame(rigBaseClip, t);
+      const base = effectorBaseWorld(rigBaseClip, rigLayers, activeLayerIdx, e, f);
+      dragCtx = { f, t, base, transient: { layerIndex: activeLayerIdx, effector: e } };
+      return true;
+    },
+    onDragMove: (pos, rot) => {
+      if (!dragCtx || !rigBaseClip) return;
+      const layer = rigLayers[activeLayerIdx];
+      const def = effectorDef(dragCtx.transient.effector);
+      if (rigGizmoSel.value === "translate" && def.canMove) {
+        dragCtx.transient.pos = layer.mode === "additive" ? vsub(pos, dragCtx.base.pos) : pos;
+      } else if (def.canRotate) {
+        dragCtx.transient.rot = layer.mode === "additive" ? quatMul(rot, qconj(dragCtx.base.rot)) : rot;
+      }
+      const pose = poseAtFrame(rigBaseClip, dragCtx.f);
+      applyLayersToPose(pose, rigBaseClip.names, rigBaseClip.parents, rigLayers, dragCtx.t, dragCtx.transient);
+      preview?.setPoseOverride(pose);
+    },
+    onDragEnd: () => {
+      if (!dragCtx) return;
+      const layer = rigLayers[activeLayerIdx];
+      const track = getTrack(layer, dragCtx.transient.effector, true)!;
+      if (dragCtx.transient.pos) setPosKey(track, dragCtx.t, dragCtx.transient.pos);
+      if (dragCtx.transient.rot) setRotKey(track, dragCtx.t, dragCtx.transient.rot);
+      dragCtx = null;
+      preview?.setPoseOverride(null);
+      rebakeRig();
+      updateRigEditor();
+    },
+  });
+
+  renderRigLayers();
+
+  // ---- modifiers -----------------------------------------------------------
+  const modInputs = [
+    { el: document.getElementById("modHips") as HTMLInputElement, out: document.getElementById("modHipsVal") as HTMLOutputElement, key: "hipsHeightCm" as const, unit: " cm" },
+    { el: document.getElementById("modKnees") as HTMLInputElement, out: document.getElementById("modKneesVal") as HTMLOutputElement, key: "kneesOutDeg" as const, unit: "°" },
+    { el: document.getElementById("modElbows") as HTMLInputElement, out: document.getElementById("modElbowsVal") as HTMLOutputElement, key: "elbowsOutDeg" as const, unit: "°" },
+    { el: document.getElementById("modFeet") as HTMLInputElement, out: document.getElementById("modFeetVal") as HTMLOutputElement, key: "feetApartCm" as const, unit: " cm" },
+  ];
+  for (const m of modInputs) {
+    m.el.addEventListener("input", () => { m.out.value = `${m.el.value}${m.unit}`; });
+    m.el.addEventListener("change", () => {
+      mods[m.key] = Number(m.el.value);
+      void reclean();
+    });
+  }
+  (document.getElementById("modReset") as HTMLButtonElement).addEventListener("click", () => {
+    let changed = false;
+    for (const m of modInputs) {
+      if (mods[m.key] !== 0) changed = true;
+      mods[m.key] = 0;
+      m.el.value = "0";
+      m.out.value = `0${m.unit}`;
+    }
+    if (changed) void reclean();
+  });
 
   despikeVal.value = `${despikeDeg.value}°`;
   cutoffVal.value = `${cutoff.value} Hz`;
@@ -389,6 +688,11 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         // changes; hips keep full motion and the character root stays identity.
         let clip = cleanClip(loaded.converted, cleanOpts());
         if (distSpineChk.checked) clip = distributeBonelessSpine(clip, Number(distSpineAmt.value) / 100);
+        // Modifiers + rig layers bake here too. Additive deltas transfer
+        // cleanly; override targets were authored on the display proportions,
+        // so on the recorded skeleton they land approximately.
+        clip = applyModifiers(clip, mods);
+        clip = applyRigLayers(clip, rigLayers);
         const rs = resample(clip, fps, trim.start, trim.end);
         const { writeWanim } = await import("./wanim/writeWanim.ts");
         downloadBytes(`${sanitizeFilename(loaded.name)}.wanim`, writeWanim(rs, loaded.clip));

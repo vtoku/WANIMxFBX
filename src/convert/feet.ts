@@ -1,6 +1,7 @@
 import type { ConvertedClip } from "./clip.ts";
 import type { Quat, Vec3 } from "../wanim/parse.ts";
-import { quatMul, quatRotate, quatNormalize } from "./quat.ts";
+import { quatMul, quatRotate } from "./quat.ts";
+import { solveTwoBone, vnorm } from "./ik.ts";
 
 // Feet-contact fixing: stops feet sliding while planted (skating) and dipping
 // below the floor (penetration). Runs as the LAST cleaning stage so smoothing
@@ -39,28 +40,7 @@ const EXIT_SPEED = 0.45;    // a real step is much faster than skating drift
 const MIN_SPAN_S = 0.2;     // ignore touch-downs shorter than this
 const BLEND_S = 0.12;       // ease the pin in/out to avoid pops
 
-const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const add = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-const scale = (a: Vec3, s: number): Vec3 => [a[0] * s, a[1] * s, a[2] * s];
-const len = (a: Vec3): number => Math.hypot(a[0], a[1], a[2]);
-const norm = (a: Vec3): Vec3 => { const l = len(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
-const dot = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-const conj = (q: Quat): Quat => [-q[0], -q[1], -q[2], q[3]];
-
-/** Shortest-arc rotation taking unit vector a onto unit vector b. */
-function quatFromTo(a: Vec3, b: Vec3): Quat {
-  const d = dot(a, b);
-  if (d > 0.999999) return [0, 0, 0, 1];
-  if (d < -0.999999) {
-    // Antiparallel: 180° about any axis perpendicular to a.
-    const ref: Vec3 = Math.abs(a[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
-    const c: Vec3 = [a[1] * ref[2] - a[2] * ref[1], a[2] * ref[0] - a[0] * ref[2], a[0] * ref[1] - a[1] * ref[0]];
-    const l = len(c) || 1;
-    return [c[0] / l, c[1] / l, c[2] / l, 0];
-  }
-  const c: Vec3 = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-  return quatNormalize([c[0], c[1], c[2], 1 + d]);
-}
 
 interface Chain { hip: number; knee: number; ankle: number; toe: number; }
 
@@ -89,39 +69,16 @@ function legWorld(f: number, ch: Chain, localPos: Vec3[][], localQuat: Quat[][])
  */
 function solveLeg(f: number, ch: Chain, target: Vec3, localPos: Vec3[][], localQuat: Quat[][]): number {
   const w = legWorld(f, ch, localPos, localQuat);
-  const L1 = len(sub(w.kneeP, w.hipP));
-  const L2 = len(sub(w.ankleP, w.kneeP));
-  if (L1 < 1e-6 || L2 < 1e-6) return 0;
-
-  const to = sub(target, w.hipP);
-  let d = len(to);
-  if (d < 1e-6) return 0;
-  const dir = scale(to, 1 / d);
-  d = Math.min(Math.max(d, Math.abs(L1 - L2) * 1.0001 + 1e-6), (L1 + L2) * 0.9999);
-  const reach = add(w.hipP, scale(dir, d)); // actual (reach-clamped) ankle target
-
-  // Knee pole = original knee direction, projected perpendicular to hip→target.
-  const kd = sub(w.kneeP, w.hipP);
-  let pole = sub(kd, scale(dir, dot(kd, dir)));
-  const pl = len(pole);
-  pole = pl > 1e-6 ? scale(pole, 1 / pl) : norm(quatRotate(w.thighR, [0, 0, 1]));
-
-  const a = (L1 * L1 - L2 * L2 + d * d) / (2 * d);
-  const b = Math.sqrt(Math.max(0, L1 * L1 - a * a));
-  const kneeNew = add(w.hipP, add(scale(dir, a), scale(pole, b)));
-
-  // Swing the thigh so the knee lands at kneeNew, then the shin so the ankle
-  // lands at reach; write back as locals. Foot keeps its original world rot.
-  const s1 = quatFromTo(norm(sub(w.kneeP, w.hipP)), norm(sub(kneeNew, w.hipP)));
-  const thighR2 = quatMul(s1, w.thighR);
-  const ankleSwung = add(kneeNew, quatRotate(s1, sub(w.ankleP, w.kneeP)));
-  const s2 = quatFromTo(norm(sub(ankleSwung, kneeNew)), norm(sub(reach, kneeNew)));
-  const shinR2 = quatMul(s2, quatMul(s1, w.shinR));
-
-  localQuat[ch.hip][f] = quatNormalize(quatMul(conj(w.hipsR), thighR2));
-  localQuat[ch.knee][f] = quatNormalize(quatMul(conj(thighR2), shinR2));
-  localQuat[ch.ankle][f] = quatNormalize(quatMul(conj(shinR2), w.footR));
-  return len(sub(reach, w.ankleP));
+  const r = solveTwoBone(
+    { parentRot: w.hipsR, rootP: w.hipP, midP: w.kneeP, endP: w.ankleP, rootR: w.thighR, midR: w.shinR, endR: w.footR },
+    target,
+    vnorm(quatRotate(w.thighR, [0, 0, 1])), // straight-leg fallback: knee forward
+  );
+  if (!r) return 0;
+  localQuat[ch.hip][f] = r.rootLocal;
+  localQuat[ch.knee][f] = r.midLocal;
+  localQuat[ch.ankle][f] = r.endLocal;
+  return r.moved;
 }
 
 function percentile(values: number[], p: number): number {
