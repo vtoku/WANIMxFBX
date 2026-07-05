@@ -94,33 +94,33 @@ No unit-test framework yet — the three `npm run` scripts above are the regress
                           stacked after cleanClip. reduceKeys() = greedy key reducer (drops keys the sampled curve
                           wouldn't miss). All of warp/ranges/mods serialize into undo snapshots, the localStorage
                           cache, and .rig.json (v2).
-                          Layers = override/additive with weight, sparse pos/rot keys per effector. FK/IK cell set:
-                          hips/hands/feet = IK spheres (move via convert/ik.ts solveTwoBone + rotate); spine, chest,
-                          neck, head, shoulders, upper/lower arms and legs = FK octahedron cells (rotate-only — the
-                          generic non-chain branch in applyEffector handles any such bone). Keys lerp/slerp inside
-                          the keyed range; OUTSIDE it each layer picks an extent: "fade" (default — the adjustment
-                          smoothsteps to zero over fadeS seconds, so ONE key is a local correction) or "hold" (MoBu
-                          semantics, first/last key extends across the clip; bracket with neutral keys). Envelope =
-                          per-channel weight multiplier in applyLayersToPose; fade = per-key LOCAL bumps (clamped
-                          sum of smoothstep ramps to the bracketing keys — keys ≤ fade apart blend solidly, distant
-                          keys do NOT resurrect the span between them). Additive keys vs the stack below the layer:
-                          positions in WORLD space, rotations in the BONE'S OWN frame (post-multiplied local delta —
-                          a captured twist stays a twist as the limb moves; the earlier world-frame premultiply made
-                          fades look random). Drags snap to the exact frame (keys bake per frame; sub-frame keys
-                          popped against neighbors). Full rebakes run CHUNKED via bakeRangeAsync (12 ms slices in a
-                          promise queue with a superseded-by-reclean guard) so editing never blocks; small dirty
-                          ranges bake sync. Key tools: timeline diamond markers on the transport (click
-                          = jump+select, ctrl-click = multi-pick, drag = retime, right-click = copy/paste/delete
-                          menu, shift-drag timeline = band select; Ctrl+C/V/Del hotkeys), "Key pose" (keyFullPose
-                          keys every effector's current effective value — locks the pose, provably changes nothing).
-                          PERF: rig edits rebake IN PLACE into the display clip via bakeRange over the edit's
-                          dirtyRange only (bit-identical to a full bake — rigCheck proves it) and repose with
-                          preview.seek, NEVER setClip (which rebuilds body/face meshes). No-op additive values
-                          (zero delta/identity — what Key pose writes) skip FK+IK per frame. This took a key edit
-                          on a heavily-keyed clip from multi-second to ~20 ms; don't reintroduce applyRigLayers +
-                          setClip in the edit path. Rig state auto-saves to localStorage per recording
-                          (wanimrig:<name>:<frames>) and exports/imports as .rig.json. Order: modifiers → layers;
-                          both apply to display AND all three exports (wanim path re-applies them to its own clip).
+                          LAYERS (v0.26 architecture — the way MoBu actually works): layers hold PER-BONE LOCAL
+                          channel curves (RigTrack keyed by bone; rot keys everywhere, pos keys on Hips only), and
+                          the rig is an INPUT DEVICE. Dragging solves IK/FK ONCE at capture time
+                          (solveEffectorOnPose on the full-stack pose → captureBoneKeys writes the affected bones'
+                          locals: additive = conj(below_local) ⊗ solved_local, override = solved local value).
+                          EVALUATION IS PURE CURVE COMPOSITION — no FK, no IK, no world space:
+                          additive local = base ⊗ slerp(I, delta, w·env), override = slerp(base, value, w·env).
+                          That's what makes corrections stable: override keys PIN local pose exactly (pop fixes —
+                          keyFullPose brackets + a fixed key, proven 0.00 mm on any base), additive keys are local
+                          deltas ("elbow +20°") that travel exactly when retimed/copied/pasted — NO base-dependent
+                          conversion anywhere. A hand IK drag writes keys on its 3 chain bones = the 3 effectors
+                          owning those bones (effectorForBone is 1:1 with EFFECTORS[].bone). Each layer:
+                          override/additive, weight, extent "fade" (default; per-key LOCAL bumps — clamped sum of
+                          smoothstep ramps, keys ≤ fade apart blend solidly, distant keys don't resurrect the span)
+                          or "hold" (first/last key extends; bracket with neutral keys). Drags snap to the exact
+                          frame. keyEffectorTarget() = one-call solve+capture for tests/programmatic edits.
+                          PERF: bake = per-bone quat ops only (19-track full-pose layer over 12k frames ≈ 190 ms);
+                          rig edits rebake IN PLACE over the edit's dirtyRange (bit-identical to full — proven),
+                          repose with preview.seek, NEVER setClip; big rebakes run CHUNKED via bakeRangeAsync
+                          (12 ms slices in a promise queue with a superseded-by-reclean guard) so editing never
+                          blocks. Key tools: timeline diamond markers (click = jump+select, ctrl-click multi-pick,
+                          drag = retime — dragging a picked key slides the whole selection, right-click menu,
+                          shift-drag band select; Ctrl+C/V/Del), "Key pose" locks the pose (provably changes
+                          nothing). Rig state auto-saves per recording (wanimrig:<name>:<frames>) and
+                          exports/imports as .rig.json v3 (older effector-space keys are DROPPED on load with a
+                          note — they can't be converted). Order: modifiers → layers; both apply to display AND
+                          all three exports (wanim path re-applies them to its own clip).
                           Viewport: small faint effector handles (hover brightens, dim while dragging) +
                           TransformControls gizmo, LOCAL space default (world rings never align with a limb — that
                           read as "snapping"; Q toggles, W/E set move/rotate). Handles are DIRECTLY draggable in the

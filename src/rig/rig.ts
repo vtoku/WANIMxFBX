@@ -1,20 +1,28 @@
 import type { ConvertedClip } from "../convert/clip.ts";
 import type { Quat, Vec3 } from "../wanim/parse.ts";
 import { quatMul, quatNormalize, quatSlerp, quatRotate } from "../convert/quat.ts";
-import { solveTwoBone, qconj, vadd, vsub, vscale, vlerp, vlen, vnorm } from "../convert/ik.ts";
+import { solveTwoBone, qconj, vadd, vsub, vscale, vlerp, vnorm, vlen } from "../convert/ik.ts";
 import { worldFromLocal, type FramePose } from "../convert/fk.ts";
 
-// A minimal MotionBuilder-style control rig: adjustment layers over the
-// cleaned clip. Each layer is override or additive with a weight, and holds
-// sparse keys per effector. Keys interpolate linearly (slerp for rotation)
-// and HOLD before the first / after the last key — bracket a local fix with
-// neutral keys, exactly like MoBu layers.
+// MotionBuilder-style animation layers, done the way MoBu actually does it:
+// layers hold PER-BONE LOCAL channel curves, and the control rig (IK
+// effectors, FK cells) is just an INPUT DEVICE. Dragging a hand solves IK
+// once, at capture time, and writes the resulting chain's local rotations as
+// keys on the layer. Evaluation is pure curve composition in bone-local
+// space — no FK, no IK, no dependence on what the base motion is doing:
 //
-// Additive keys store world-space DELTAS relative to the stack below the
-// layer; override keys store absolute world targets, blended in by weight.
-// Hands/feet solve through the shared two-bone IK (elbow/knee keep their
-// recorded plane, end bone keeps its world rotation unless a rotation key
-// says otherwise). Hips writes the root directly; head is rotation-only.
+//   additive: local = base_local ⊗ slerp(I, delta, weight·env)   (post-mult)
+//   override: local = slerp(base_local, keyed_local, weight·env)
+//
+// This is what makes corrections stable: an override key PINS the local pose
+// (pop fixes hold regardless of the underlying motion), an additive key is a
+// relative adjustment like "elbow +20°" that travels correctly when keys are
+// retimed, copied, or pasted. Keys interpolate on the layer's own curve
+// (slerp + per-key ease), exactly like a DCC.
+//
+// Each rig effector maps 1:1 to the bone it edits (def.bone). An IK hand drag
+// writes keys on the three chain bones — i.e. on the upper-arm, forearm, and
+// hand effectors' tracks, which is exactly how MoBu control-rig keys land.
 
 export type EffectorId =
   | "hips" | "leftHand" | "rightHand" | "leftFoot" | "rightFoot" | "head"
@@ -26,7 +34,7 @@ export type EffectorId =
 export interface EffectorDef {
   id: EffectorId;
   label: string;
-  /** Bone whose world transform the gizmo edits. */
+  /** Bone whose local channels this effector's keys land on. */
   bone: string;
   /** Two-bone chain (root/mid) when the effector is IK-driven. */
   chain?: { root: string; mid: string };
@@ -40,11 +48,6 @@ export interface EffectorDef {
   canRotate: boolean;
 }
 
-/**
- * MoBu-style cell set: IK effectors (hips, hands, feet) move AND rotate; the
- * major body bones are FK effectors that rotate in place — translating an FK
- * bone would stretch the skeleton, so reach for the IK effectors instead.
- */
 export const EFFECTORS: EffectorDef[] = [
   { id: "hips", label: "Hips", bone: "Hips", canMove: true, canRotate: true },
   { id: "leftHand", label: "Left hand", bone: "LeftHand", chain: { root: "LeftUpperArm", mid: "LeftLowerArm" }, canMove: true, canRotate: true },
@@ -67,36 +70,11 @@ export const EFFECTORS: EffectorDef[] = [
   { id: "rightLowerLeg", label: "Right shin", bone: "RightLowerLeg", tip: ["RightFoot"], canMove: false, canRotate: true },
 ];
 
-/**
- * Joint position + tip direction of an FK bone through the FULL layer stack
- * at frame f — the reference a Poser-style translate-drag swings around.
- * The head has no child, so its tip is straight "up" in head space.
- */
-export function fkDragRef(
-  clip: ConvertedClip,
-  layers: RigLayer[],
-  effector: EffectorId,
-  f: number,
-): { joint: Vec3; tip: Vec3 } | null {
-  const def = effectorDef(effector);
-  const bone = clip.names.indexOf(def.bone);
-  if (bone < 0) return null;
-  const pose = poseAtFrame(clip, f);
-  applyLayersToPose(pose, clip.names, clip.parents, layers, clip.times[f]);
-  const world = worldFromLocal(clip.parents, pose);
-  const joint = world.pos[bone];
-  if (def.tip) {
-    for (const t of def.tip) {
-      const ti = clip.names.indexOf(t);
-      // A "filled" missing bone (e.g. UpperChest) sits on top of its parent —
-      // useless as a direction; fall through to the next candidate.
-      if (ti >= 0 && vlen(vsub(world.pos[ti], joint)) > 0.02) return { joint, tip: world.pos[ti] };
-    }
-  }
-  return { joint, tip: vadd(joint, quatRotate(world.rot[bone], [0, 0.18, 0])) };
-}
-
 export const effectorDef = (id: EffectorId): EffectorDef => EFFECTORS.find((e) => e.id === id)!;
+
+/** The effector whose keys land on this bone (1:1 by design). */
+export const effectorForBone = (bone: string): EffectorDef | undefined =>
+  EFFECTORS.find((e) => e.bone === bone);
 
 /** Handle/marker color: orange hips, green center column, blue left, pink right. */
 export function effectorColor(id: EffectorId): string {
@@ -104,6 +82,8 @@ export function effectorColor(id: EffectorId): string {
   if (id === "head" || id === "neck" || id === "spine" || id === "chest") return "#ccee66";
   return id.startsWith("left") ? "#5599ff" : "#ff5588";
 }
+
+// ---- keys -------------------------------------------------------------------
 
 /** Interpolation of the segment LEAVING this key (like DCC curve editors). */
 export type KeyEase = "linear" | "smooth" | "step";
@@ -115,8 +95,11 @@ const applyEase = (frac: number, ease?: KeyEase): number =>
   ease === "step" ? 0 : ease === "smooth" ? frac * frac * (3 - 2 * frac) : frac;
 
 export interface RigTrack {
-  effector: EffectorId;
-  posKeys: PosKey[]; // sorted by time
+  /** Bone whose LOCAL channels these keys drive. */
+  bone: string;
+  /** Hips only: local (== world) position keys. */
+  posKeys: PosKey[];
+  /** Local rotation keys: additive = bone-local delta; override = local value. */
   rotKeys: RotKey[];
 }
 
@@ -124,13 +107,10 @@ export interface RigLayer {
   name: string;
   mode: "override" | "additive";
   /**
-   * How keys extend beyond the keyed range. "hold" = MoBu style, the first/
-   * last key's value applies to the whole clip (bracket with neutral keys to
-   * localize). "fade" = correction style, the adjustment eases in/out over
-   * `fadeS` seconds around the keyed range and is zero elsewhere.
+   * "hold" = MoBu style, first/last key extends across the whole clip.
+   * "fade" = correction style: each key is a LOCAL bump easing over fadeS.
    */
   extent: "hold" | "fade";
-  /** Fade-in/out duration in seconds (fade extent only). */
   fadeS: number;
   weight: number; // 0..1
   enabled: boolean;
@@ -142,20 +122,25 @@ export function makeLayer(name: string): RigLayer {
   return { name, mode: "additive", extent: "fade", fadeS: 0.5, weight: 1, enabled: true, tracks: [] };
 }
 
-export function getTrack(layer: RigLayer, effector: EffectorId, create = false): RigTrack | null {
-  let t = layer.tracks.find((tr) => tr.effector === effector) ?? null;
+export function getBoneTrack(layer: RigLayer, bone: string, create = false): RigTrack | null {
+  let t = layer.tracks.find((tr) => tr.bone === bone) ?? null;
   if (!t && create) {
-    t = { effector, posKeys: [], rotKeys: [] };
+    t = { bone, posKeys: [], rotKeys: [] };
     layer.tracks.push(t);
   }
   return t;
+}
+
+/** Track for an effector = the track of its own bone. */
+export function getTrack(layer: RigLayer, effector: EffectorId, create = false): RigTrack | null {
+  return getBoneTrack(layer, effectorDef(effector).bone, create);
 }
 
 const KEY_EPS = 1 / 120; // keys closer than half a frame replace each other
 
 export function setPosKey(track: RigTrack, time: number, v: Vec3): void {
   const i = track.posKeys.findIndex((k) => Math.abs(k.time - time) < KEY_EPS);
-  if (i >= 0) track.posKeys[i] = { time, v, ease: track.posKeys[i].ease }; // replace value, keep ease
+  if (i >= 0) track.posKeys[i] = { time, v, ease: track.posKeys[i].ease };
   else {
     track.posKeys.push({ time, v });
     track.posKeys.sort((a, b) => a.time - b.time);
@@ -179,13 +164,13 @@ export function deleteKeysAt(track: RigTrack, time: number, eps: number): number
   return np - track.posKeys.length + (nr - track.rotKeys.length);
 }
 
-/** All key times of a track, merged and deduped (for the chip list). */
+/** All key times of a track, merged and deduped. */
 export function keyTimes(track: RigTrack): number[] {
   const all = [...track.posKeys.map((k) => k.time), ...track.rotKeys.map((k) => k.time)].sort((a, b) => a - b);
   return all.filter((t, i) => i === 0 || t - all[i - 1] > KEY_EPS);
 }
 
-/** Move the pos+rot keys at `from` to `to` (any keys already at `to` are replaced). */
+/** Move the pos+rot keys at `from` to `to`. Local values travel correctly as-is. */
 export function retimeKeys(track: RigTrack, from: number, to: number): void {
   track.posKeys = track.posKeys.filter((k) => Math.abs(k.time - to) > KEY_EPS || Math.abs(k.time - from) < KEY_EPS);
   track.rotKeys = track.rotKeys.filter((k) => Math.abs(k.time - to) > KEY_EPS || Math.abs(k.time - from) < KEY_EPS);
@@ -196,61 +181,8 @@ export function retimeKeys(track: RigTrack, from: number, to: number): void {
 }
 
 /**
- * Influence envelope. Hold: 1 everywhere. Fade: each key is a LOCAL bump —
- * full strength at the key, smoothstep to zero fadeS away — and overlapping
- * bumps merge (clamped sum). Keys closer than ~2×fade blend solidly; distant
- * corrections do NOT resurrect the span between them, which would make
- * frames far from any key jump when a new correction lands.
- */
-function envelope(keys: Array<{ time: number }>, t: number, extent: "hold" | "fade", fadeS: number): number {
-  if (!keys.length) return 0;
-  if (extent === "hold") return 1;
-  const fade = Math.max(1e-6, fadeS);
-  let prev = -Infinity;
-  let next = Infinity;
-  for (const k of keys) {
-    if (k.time <= t) prev = k.time;
-    if (k.time >= t) { next = k.time; break; }
-  }
-  const ramp = (d: number): number => {
-    if (d <= 0) return 1;
-    if (d >= fade) return 0;
-    const x = 1 - d / fade;
-    return x * x * (3 - 2 * x);
-  };
-  return Math.min(1, ramp(t - prev) + ramp(next - t));
-}
-
-function samplePos(keys: PosKey[], t: number): Vec3 | null {
-  if (!keys.length) return null;
-  if (t <= keys[0].time) return keys[0].v;
-  if (t >= keys[keys.length - 1].time) return keys[keys.length - 1].v;
-  let i = 0;
-  while (keys[i + 1].time < t) i++;
-  const a = keys[i], b = keys[i + 1];
-  const frac = applyEase((t - a.time) / Math.max(1e-9, b.time - a.time), a.ease);
-  return vlerp(a.v, b.v, frac);
-}
-
-function sampleRot(keys: RotKey[], t: number): Quat | null {
-  if (!keys.length) return null;
-  if (t <= keys[0].time) return keys[0].q;
-  if (t >= keys[keys.length - 1].time) return keys[keys.length - 1].q;
-  let i = 0;
-  while (keys[i + 1].time < t) i++;
-  const a = keys[i], b = keys[i + 1];
-  const frac = applyEase((t - a.time) / Math.max(1e-9, b.time - a.time), a.ease);
-  return quatSlerp(a.q, b.q, frac);
-}
-
-/** Public sampling for the curve editor's interpolation preview. */
-export const sampleTrackPos = samplePos;
-export const sampleTrackRot = sampleRot;
-
-/**
- * Remove keys whose absence the sampled curve wouldn't notice (within
- * posTol meters / rotTol radians). Greedy sweep until stable; first and
- * last keys always survive. Returns how many keys were dropped.
+ * Remove keys whose absence the sampled curve wouldn't notice. Greedy sweep
+ * until stable; first and last keys always survive.
  */
 export function reduceKeys(track: RigTrack, posTol = 0.005, rotTol = 1 * Math.PI / 180): number {
   let removed = 0;
@@ -300,15 +232,61 @@ export function setKeyEase(track: RigTrack, time: number, ease: KeyEase): void {
   for (const k of track.rotKeys) if (Math.abs(k.time - time) < KEY_EPS) k.ease = ease;
 }
 
+// ---- sampling ----------------------------------------------------------------
+
+function samplePos(keys: PosKey[], t: number): Vec3 | null {
+  if (!keys.length) return null;
+  if (t <= keys[0].time) return keys[0].v;
+  if (t >= keys[keys.length - 1].time) return keys[keys.length - 1].v;
+  let i = 0;
+  while (keys[i + 1].time < t) i++;
+  const a = keys[i], b = keys[i + 1];
+  const frac = applyEase((t - a.time) / Math.max(1e-9, b.time - a.time), a.ease);
+  return vlerp(a.v, b.v, frac);
+}
+
+function sampleRot(keys: RotKey[], t: number): Quat | null {
+  if (!keys.length) return null;
+  if (t <= keys[0].time) return keys[0].q;
+  if (t >= keys[keys.length - 1].time) return keys[keys.length - 1].q;
+  let i = 0;
+  while (keys[i + 1].time < t) i++;
+  const a = keys[i], b = keys[i + 1];
+  const frac = applyEase((t - a.time) / Math.max(1e-9, b.time - a.time), a.ease);
+  return quatSlerp(a.q, b.q, frac);
+}
+
+/** Public sampling for the curve editor's interpolation preview. */
+export const sampleTrackPos = samplePos;
+export const sampleTrackRot = sampleRot;
+
+/**
+ * Influence envelope. Hold: 1 everywhere. Fade: each key is a LOCAL bump —
+ * full strength at the key, smoothstep to zero fadeS away — and overlapping
+ * bumps merge (clamped sum). Distant keys don't resurrect the span between.
+ */
+function envelope(keys: Array<{ time: number }>, t: number, extent: "hold" | "fade", fadeS: number): number {
+  if (!keys.length) return 0;
+  if (extent === "hold") return 1;
+  const fade = Math.max(1e-6, fadeS);
+  let prev = -Infinity;
+  let next = Infinity;
+  for (const k of keys) {
+    if (k.time <= t) prev = k.time;
+    if (k.time >= t) { next = k.time; break; }
+  }
+  const ramp = (d: number): number => {
+    if (d <= 0) return 1;
+    if (d >= fade) return 0;
+    const x = 1 - d / fade;
+    return x * x * (3 - 2 * x);
+  };
+  return Math.min(1, ramp(t - prev) + ramp(next - t));
+}
+
 const IDENTITY: Quat = [0, 0, 0, 1];
 
-/** Live-drag value injected in place of the sampled keys. */
-export interface Transient {
-  layerIndex: number; // index into the FULL layer list
-  effector: EffectorId;
-  pos?: Vec3;
-  rot?: Quat;
-}
+// ---- evaluation (pure curve composition — no FK, no IK) -----------------------
 
 /** Copy one frame's local transforms out of a clip. */
 export function poseAtFrame(clip: ConvertedClip, f: number): FramePose {
@@ -330,97 +308,10 @@ export function nearestFrame(clip: ConvertedClip, time: number): number {
   return t - clip.times[i] > (clip.times[i + 1] ?? clip.times[i]) - t ? i + 1 : i;
 }
 
-function applyEffector(
-  pose: FramePose,
-  names: string[],
-  parents: number[],
-  effector: EffectorId,
-  mode: "override" | "additive",
-  wPos: number,
-  wRot: number,
-  pv: Vec3 | null,
-  rv: Quat | null,
-): void {
-  const def = effectorDef(effector);
-  const bone = names.indexOf(def.bone);
-  if (bone < 0) return;
-  if (pv && wPos <= 0) pv = null;
-  if (rv && wRot <= 0) rv = null;
-  if (!pv && !rv) return;
-
-  if (effector === "hips") {
-    // Root: world == local, write directly. Additive rot deltas are stored in
-    // the BONE'S OWN frame (post-multiplied) so a captured twist stays a
-    // twist as the body moves through the fade — a world-frame delta would
-    // point somewhere else on every other frame.
-    if (pv) pose.pos[bone] = mode === "additive" ? vadd(pose.pos[bone], vscale(pv, wPos)) : vlerp(pose.pos[bone], pv, wPos);
-    if (rv) {
-      pose.quat[bone] = quatNormalize(
-        mode === "additive" ? quatMul(pose.quat[bone], quatSlerp(IDENTITY, rv, wRot)) : quatSlerp(pose.quat[bone], rv, wRot),
-      );
-    }
-    return;
-  }
-
-  if (!def.chain) {
-    // Rotation-only effector (FK body bone): bone-local additive delta.
-    if (!rv) return;
-    const world = worldFromLocal(parents, pose);
-    const parentRot = world.rot[parents[bone]];
-    const cur = world.rot[bone];
-    const desired = mode === "additive" ? quatMul(cur, quatSlerp(IDENTITY, rv, wRot)) : quatSlerp(cur, rv, wRot);
-    pose.quat[bone] = quatNormalize(quatMul(qconj(parentRot), desired));
-    return;
-  }
-
-  // IK effector (hand/foot).
-  const root = names.indexOf(def.chain.root);
-  const mid = names.indexOf(def.chain.mid);
-  if (root < 0 || mid < 0) return;
-  let world = worldFromLocal(parents, pose);
-
-  if (pv) {
-    const cur = world.pos[bone];
-    const target = mode === "additive" ? vadd(cur, vscale(pv, wPos)) : vlerp(cur, pv, wPos);
-    // Straight-chain pole fallback: knees bend forward, elbows backward.
-    const fallback = quatRotate(world.rot[root], [0, 0, effector.endsWith("Foot") || effector.endsWith("foot") ? 1 : -1]);
-    const r = solveTwoBone(
-      {
-        parentRot: world.rot[parents[root]],
-        rootP: world.pos[root], midP: world.pos[mid], endP: cur,
-        rootR: world.rot[root], midR: world.rot[mid], endR: world.rot[bone],
-      },
-      target,
-      vnorm(fallback),
-    );
-    if (r) {
-      pose.quat[root] = r.rootLocal;
-      pose.quat[mid] = r.midLocal;
-      pose.quat[bone] = r.endLocal;
-      if (rv) world = worldFromLocal(parents, pose); // rot edit needs fresh parents
-    }
-  }
-
-  if (rv) {
-    const parentRot = world.rot[mid];
-    const cur = world.rot[bone];
-    const desired = mode === "additive" ? quatMul(cur, quatSlerp(IDENTITY, rv, wRot)) : quatSlerp(cur, rv, wRot);
-    pose.quat[bone] = quatNormalize(quatMul(qconj(parentRot), desired));
-  }
-}
-
-/** Per-channel envelope for a track at time t (0 = no influence). */
-function trackEnvelopes(track: RigTrack, layer: RigLayer, t: number): { pos: number; rot: number } {
-  return {
-    pos: envelope(track.posKeys, t, layer.extent, layer.fadeS),
-    rot: envelope(track.rotKeys, t, layer.extent, layer.fadeS),
-  };
-}
-
 /**
- * Apply the layer stack to a single-frame pose, in place. `transient`
- * substitutes the live gizmo value for one effector in one layer while
- * dragging. Layer order = list order; disabled/zero-weight layers skip.
+ * Apply the layer stack to a single-frame pose, in place. Per bone, per
+ * layer: sample the layer's local curve, compose by mode, scaled by
+ * weight × envelope. Nothing here needs world space.
  */
 export function applyLayersToPose(
   pose: FramePose,
@@ -428,53 +319,35 @@ export function applyLayersToPose(
   parents: number[],
   layers: RigLayer[],
   t: number,
-  transient?: Transient | null,
 ): void {
-  for (let li = 0; li < layers.length; li++) {
-    const layer = layers[li];
+  void parents;
+  for (const layer of layers) {
     if (!layer.enabled || layer.weight <= 0) continue;
     for (const track of layer.tracks) {
-      let pv = samplePos(track.posKeys, t);
-      let rv = sampleRot(track.rotKeys, t);
-      const env = trackEnvelopes(track, layer, t);
-      if (transient && transient.layerIndex === li && transient.effector === track.effector) {
-        // The live gizmo value applies at full envelope at the drag frame.
-        if (transient.pos) { pv = transient.pos; env.pos = 1; }
-        if (transient.rot) { rv = transient.rot; env.rot = 1; }
-      } else if (layer.mode === "additive") {
-        // No-op additive values (zero delta / identity rotation — what
-        // neutral keys and "Key pose" mostly write) must not cost an FK+IK
-        // pass per frame. This is THE fix for laggy edits on keyed-up clips.
-        if (pv && Math.abs(pv[0]) + Math.abs(pv[1]) + Math.abs(pv[2]) < 1e-7) pv = null;
-        if (rv && 1 - Math.abs(rv[3]) < 1e-10) rv = null;
+      const b = names.indexOf(track.bone);
+      if (b < 0) continue;
+      const envR = envelope(track.rotKeys, t, layer.extent, layer.fadeS);
+      const wR = layer.weight * envR;
+      if (wR > 0) {
+        const rv = sampleRot(track.rotKeys, t);
+        if (rv && !(layer.mode === "additive" && 1 - Math.abs(rv[3]) < 1e-10)) {
+          pose.quat[b] = quatNormalize(
+            layer.mode === "additive"
+              ? quatMul(pose.quat[b], quatSlerp(IDENTITY, rv, wR))
+              : quatSlerp(pose.quat[b], rv, wR),
+          );
+        }
       }
-      if (!pv && !rv) continue;
-      applyEffector(pose, names, parents, track.effector, layer.mode, layer.weight * env.pos, layer.weight * env.rot, pv, rv);
-    }
-  }
-}
-
-/**
- * Key the ACTIVE layer's full effective pose at time t: every effector in
- * the skeleton gets its current effective value keyed (existing adjustments
- * at their faded/held strength, everything else neutral). Locks the pose so
- * later keys elsewhere can't disturb this moment.
- */
-export function keyFullPose(clip: ConvertedClip, layers: RigLayer[], layerIndex: number, t: number, f: number): void {
-  const layer = layers[layerIndex];
-  for (const def of EFFECTORS) {
-    if (clip.names.indexOf(def.bone) < 0) continue;
-    const track = getTrack(layer, def.id, true)!;
-    const env = trackEnvelopes(track, layer, t);
-    const rawP = samplePos(track.posKeys, t);
-    const rawR = sampleRot(track.rotKeys, t);
-    if (layer.mode === "additive") {
-      if (def.canMove) setPosKey(track, t, rawP ? vscale(rawP, env.pos) : [0, 0, 0]);
-      if (def.canRotate) setRotKey(track, t, rawR ? quatSlerp(IDENTITY, rawR, env.rot) : IDENTITY);
-    } else {
-      const base = effectorBaseWorld(clip, layers, layerIndex, def.id, f);
-      if (def.canMove) setPosKey(track, t, rawP ? vlerp(base.pos, rawP, env.pos) : base.pos);
-      if (def.canRotate) setRotKey(track, t, rawR ? quatSlerp(base.rot, rawR, env.rot) : base.rot);
+      if (track.posKeys.length && track.bone === "Hips") {
+        const envP = envelope(track.posKeys, t, layer.extent, layer.fadeS);
+        const wP = layer.weight * envP;
+        if (wP > 0) {
+          const pv = samplePos(track.posKeys, t);
+          if (pv && !(layer.mode === "additive" && Math.abs(pv[0]) + Math.abs(pv[1]) + Math.abs(pv[2]) < 1e-7)) {
+            pose.pos[b] = layer.mode === "additive" ? vadd(pose.pos[b], vscale(pv, wP)) : vlerp(pose.pos[b], pv, wP);
+          }
+        }
+      }
     }
   }
 }
@@ -485,17 +358,11 @@ export function hasRigContent(layers: RigLayer[]): boolean {
   );
 }
 
+// ---- baking --------------------------------------------------------------------
+
 /** A time window a rig edit dirtied; bake only frames inside it. */
 export interface TimeRange { t0: number; t1: number; }
 
-/**
- * Bake the layer stack from `base` into `outPos`/`outQuat` IN PLACE, only for
- * frames within `range` (whole clip when omitted). Frames in range that no
- * track influences are reset to the base — so a partial bake over an edit's
- * dirty window leaves every other frame's previous bake intact. This is what
- * keeps edits on heavily-keyed clips responsive: an edit re-bakes its
- * neighborhood, not the whole recording.
- */
 function makeBakeStep(
   base: ConvertedClip,
   layers: RigLayer[],
@@ -522,7 +389,6 @@ function makeBakeStep(
     const t = base.times[f];
     if (t < t0 || t > t1) return; // outside the edit — keep the previous bake
     if (!windows.some((w) => t >= w.t0 && t <= w.t1)) {
-      // No layer touches this frame — reset to base.
       for (let b = 0; b < bones; b++) {
         outPos[b][f] = base.localPos[b][f];
         outQuat[b][f] = base.localQuat[b][f];
@@ -550,10 +416,8 @@ export function bakeRange(
 }
 
 /**
- * Chunked bake: same result as bakeRange, but yields to the event loop every
- * ~budgetMs so the UI never freezes on a big rebake. Writes land in place as
- * they go (the preview shows progress). Returns false if `isStale` cancelled
- * it — the caller's next bake supersedes this one.
+ * Chunked bake: same result as bakeRange but yields to the event loop every
+ * ~budgetMs, so big rebakes never freeze the UI. Returns false if cancelled.
  */
 export async function bakeRangeAsync(
   base: ConvertedClip,
@@ -580,9 +444,7 @@ export async function bakeRangeAsync(
 
 /**
  * The time window whose baked result changes when a key at `time` on `track`
- * is added, replaced, moved, or removed: to the neighbor keys on either side,
- * pushed out by the fade (or to the clip ends on a hold layer, where the
- * first/last key extends outward).
+ * is added, replaced, moved, or removed.
  */
 export function dirtyRange(layer: RigLayer, track: RigTrack, time: number): TimeRange {
   let prev = -Infinity;
@@ -612,10 +474,28 @@ export function applyRigLayers(clip: ConvertedClip, layers: RigLayer[]): Convert
   return { ...clip, localPos, localQuat, bindPos: localPos.map((t) => t[0]) };
 }
 
-/**
- * Effector world state through the layers BELOW `layerIndex` at frame f —
- * the reference additive deltas are captured against.
- */
+// ---- capture: the rig as an input device --------------------------------------
+
+/** Deep-copy a frame pose (solving mutates in place). */
+export function clonePose(pose: FramePose): FramePose {
+  return { pos: pose.pos.map((p) => [...p] as Vec3), quat: pose.quat.map((q) => [...q] as Quat) };
+}
+
+/** Pose through the FULL enabled stack at frame f. */
+export function fullStackPose(clip: ConvertedClip, layers: RigLayer[], f: number): FramePose {
+  const pose = poseAtFrame(clip, f);
+  applyLayersToPose(pose, clip.names, clip.parents, layers, clip.times[f]);
+  return pose;
+}
+
+/** Pose through the layers BELOW `layerIndex` at frame f. */
+export function belowStackPose(clip: ConvertedClip, layers: RigLayer[], layerIndex: number, f: number): FramePose {
+  const pose = poseAtFrame(clip, f);
+  applyLayersToPose(pose, clip.names, clip.parents, layers.slice(0, layerIndex), clip.times[f]);
+  return pose;
+}
+
+/** Effector world state through the layers below `layerIndex` at frame f. */
 export function effectorBaseWorld(
   clip: ConvertedClip,
   layers: RigLayer[],
@@ -623,9 +503,175 @@ export function effectorBaseWorld(
   effector: EffectorId,
   f: number,
 ): { pos: Vec3; rot: Quat } {
-  const pose = poseAtFrame(clip, f);
-  applyLayersToPose(pose, clip.names, clip.parents, layers.slice(0, layerIndex), clip.times[f]);
+  const pose = belowStackPose(clip, layers, layerIndex, f);
   const world = worldFromLocal(clip.parents, pose);
   const bone = clip.names.indexOf(effectorDef(effector).bone);
   return { pos: world.pos[bone], rot: world.rot[bone] };
+}
+
+export interface EffectorTarget {
+  /** Absolute world position for the effector's bone (IK / hips / FK-swing tip pull). */
+  pos?: Vec3;
+  /** Absolute world rotation for the effector's bone. */
+  rot?: Quat;
+}
+
+/**
+ * Solve the effector onto absolute world targets, IN PLACE on `pose`.
+ * This runs at CAPTURE time (drags) — never during evaluation/baking.
+ * Returns the bones whose locals were written.
+ */
+export function solveEffectorOnPose(
+  pose: FramePose,
+  names: string[],
+  parents: number[],
+  effector: EffectorId,
+  target: EffectorTarget,
+): string[] {
+  const def = effectorDef(effector);
+  const bone = names.indexOf(def.bone);
+  if (bone < 0 || (!target.pos && !target.rot)) return [];
+
+  if (effector === "hips") {
+    if (target.pos) pose.pos[bone] = [...target.pos] as Vec3;
+    if (target.rot) pose.quat[bone] = quatNormalize([...target.rot] as Quat);
+    return [def.bone];
+  }
+
+  if (!def.chain) {
+    // FK bone: world-rotation target → local.
+    if (!target.rot) return [];
+    const world = worldFromLocal(parents, pose);
+    pose.quat[bone] = quatNormalize(quatMul(qconj(world.rot[parents[bone]]), target.rot));
+    return [def.bone];
+  }
+
+  // IK effector.
+  const written: string[] = [];
+  const root = names.indexOf(def.chain.root);
+  const mid = names.indexOf(def.chain.mid);
+  if (root < 0 || mid < 0) return [];
+  let world = worldFromLocal(parents, pose);
+
+  if (target.pos) {
+    const fallback = quatRotate(world.rot[root], [0, 0, effector.endsWith("Foot") ? 1 : -1]);
+    const r = solveTwoBone(
+      {
+        parentRot: world.rot[parents[root]],
+        rootP: world.pos[root], midP: world.pos[mid], endP: world.pos[bone],
+        rootR: world.rot[root], midR: world.rot[mid], endR: world.rot[bone],
+      },
+      target.pos,
+      vnorm(fallback),
+    );
+    if (r) {
+      pose.quat[root] = r.rootLocal;
+      pose.quat[mid] = r.midLocal;
+      pose.quat[bone] = r.endLocal;
+      written.push(def.chain.root, def.chain.mid, def.bone);
+      if (target.rot) world = worldFromLocal(parents, pose);
+    }
+  }
+  if (target.rot) {
+    pose.quat[bone] = quatNormalize(quatMul(qconj(world.rot[mid]), target.rot));
+    if (!written.includes(def.bone)) written.push(def.bone);
+  }
+  return written;
+}
+
+/**
+ * Write layer keys reproducing `solvedPose` for the given bones at time t:
+ * additive stores conj(below_local) ⊗ solved_local (bone-local delta),
+ * override stores the solved local value. Returns the dirtied window.
+ */
+export function captureBoneKeys(
+  clip: ConvertedClip,
+  layers: RigLayer[],
+  layerIndex: number,
+  bones: string[],
+  solvedPose: FramePose,
+  f: number,
+  t: number,
+  withHipsPos = false,
+): TimeRange | null {
+  const layer = layers[layerIndex];
+  if (!layer) return null;
+  const below = belowStackPose(clip, layers, layerIndex, f);
+  let dirty: TimeRange | null = null;
+  for (const boneName of bones) {
+    const b = clip.names.indexOf(boneName);
+    if (b < 0) continue;
+    const track = getBoneTrack(layer, boneName, true)!;
+    const before = dirtyRange(layer, track, t);
+    const rot =
+      layer.mode === "additive"
+        ? quatNormalize(quatMul(qconj(below.quat[b]), solvedPose.quat[b]))
+        : quatNormalize(solvedPose.quat[b]);
+    setRotKey(track, t, rot);
+    if (withHipsPos && boneName === "Hips") {
+      const pos = layer.mode === "additive" ? vsub(solvedPose.pos[b], below.pos[b]) : ([...solvedPose.pos[b]] as Vec3);
+      setPosKey(track, t, pos);
+    }
+    const after = dirtyRange(layer, track, t);
+    const range = unionRange(before, after);
+    dirty = dirty ? unionRange(dirty, range) : range;
+  }
+  return dirty;
+}
+
+/**
+ * One-call capture: solve the effector to absolute targets at frame f on the
+ * full stack, then key the affected bones. Used by tests and any programmatic
+ * edits; the viewport drag does the same thing in two steps (live preview).
+ */
+export function keyEffectorTarget(
+  clip: ConvertedClip,
+  layers: RigLayer[],
+  layerIndex: number,
+  effector: EffectorId,
+  f: number,
+  target: EffectorTarget,
+): TimeRange | null {
+  const pose = fullStackPose(clip, layers, f);
+  const bones = solveEffectorOnPose(pose, clip.names, clip.parents, effector, target);
+  if (!bones.length) return null;
+  const t = clip.times[f] - clip.times[0];
+  return captureBoneKeys(clip, layers, layerIndex, bones, pose, f, t, effector === "hips" && !!target.pos);
+}
+
+/**
+ * Key the full current pose (every effector bone) at time t — locks the pose
+ * so edits elsewhere can't disturb this moment. Pure local capture, no IK.
+ */
+export function keyFullPose(clip: ConvertedClip, layers: RigLayer[], layerIndex: number, t: number, f: number): void {
+  const pose = fullStackPose(clip, layers, f);
+  const bones = EFFECTORS.map((e) => e.bone).filter((b) => clip.names.indexOf(b) >= 0);
+  captureBoneKeys(clip, layers, layerIndex, bones, pose, f, t, true);
+}
+
+// ---- FK drag reference ----------------------------------------------------------
+
+/**
+ * Joint position + tip direction of an FK bone through the FULL layer stack
+ * at frame f — the reference a Poser-style translate-drag swings around.
+ */
+export function fkDragRef(
+  clip: ConvertedClip,
+  layers: RigLayer[],
+  effector: EffectorId,
+  f: number,
+): { joint: Vec3; tip: Vec3 } | null {
+  const def = effectorDef(effector);
+  const bone = clip.names.indexOf(def.bone);
+  if (bone < 0) return null;
+  const pose = fullStackPose(clip, layers, f);
+  const world = worldFromLocal(clip.parents, pose);
+  const joint = world.pos[bone];
+  if (def.tip) {
+    for (const t of def.tip) {
+      const ti = clip.names.indexOf(t);
+      if (ti >= 0 && vlen(vsub(world.pos[ti], joint)) > 0.02) return { joint, tip: world.pos[ti] };
+    }
+  }
+  return { joint, tip: vadd(joint, quatRotate(world.rot[bone], [0, 0.18, 0])) };
 }

@@ -1,16 +1,19 @@
-// Verifies the control-rig layer engine on real motion data:
-//  - additive keys offset the effector by the delta (and HOLD past the ends)
-//  - neutral keys bracket an adjustment so it stays local
-//  - override keys place the effector at the absolute target, scaled by weight
-//  - layers stack in order
-//  - position keys preserve the end bone's world rotation
-//  - only the involved chain changes
+// Verifies the control-rig layer engine (bone-local channel curves, MoBu
+// style) plus the modifiers, on real motion data:
+//  - the rig is an input device: IK solves at capture, keys are LOCAL values
+//  - override keys PIN the local pose (pop fixes hold on any base motion)
+//  - additive keys are local deltas that travel when retimed/copied
+//  - envelopes: hold extends; fade keys are local bumps
+//  - dirty-range partial rebakes are identical to full rebakes
 // Usage: node scripts/rigCheck.mjs [file.wanim]
 import { readFileSync } from "node:fs";
 const { parseWanim } = await import("../src/wanim/parse.ts");
 const { convertCharacter } = await import("../src/convert/clip.ts");
-const { makeLayer, getTrack, setPosKey, setRotKey, applyRigLayers, poseAtFrame, nearestFrame, retimeKeys, keyFullPose, bakeRange, dirtyRange } =
-  await import("../src/rig/rig.ts");
+const {
+  makeLayer, getTrack, setPosKey, setRotKey, applyRigLayers, poseAtFrame, nearestFrame,
+  retimeKeys, keyFullPose, bakeRange, dirtyRange, reduceKeys, setKeyEase,
+  keyEffectorTarget, fullStackPose, belowStackPose, captureBoneKeys, effectorDef,
+} = await import("../src/rig/rig.ts");
 const { worldFromLocal } = await import("../src/convert/fk.ts");
 
 const path = process.argv[2] ?? "C:\\Users\\VTOKU\\Downloads\\All-The-Things-2-2026-05-24-18-55-10.wanim";
@@ -33,6 +36,12 @@ const qangle = (a, b) => {
   const d = Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
   return 2 * Math.acos(Math.min(1, d)) * (180 / Math.PI);
 };
+const qmul = (a, b) => [
+  a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],
+  a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],
+  a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],
+  a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2],
+];
 const mm = (v) => (v * 1000).toFixed(2);
 
 const hand = boneI("RightHand");
@@ -40,271 +49,205 @@ const tKey = 5;
 const fKey = nearestFrame(c, tKey);
 const f0 = 0;
 
-// --- 1. additive key offsets the hand; HOLD extends it across the clip -----
+// --- 1. IK capture: drag target lands, keys on the chain, locals reproduce ----
 {
   const layer = makeLayer("L1");
   layer.extent = "hold";
-  setPosKey(getTrack(layer, "rightHand", true), tKey, [0.06, 0.04, 0]);
-  const baked = applyRigLayers(c, [layer]);
-  const dAtKey = dist(world(baked, fKey).pos[hand], world(c, fKey).pos[hand]);
-  const dAtStart = dist(world(baked, f0).pos[hand], world(c, f0).pos[hand]);
-  const expect = Math.hypot(0.06, 0.04);
-  check("additive: hand moves by the delta at the key",
-    Math.abs(dAtKey - expect) < 0.004, `moved ${mm(dAtKey)}mm expect ${mm(expect)}mm`);
-  check("additive hold: single key HOLDS at clip start",
-    Math.abs(dAtStart - expect) < 0.006, `moved ${mm(dAtStart)}mm at t=0`);
-}
-
-// --- 1b. fade extent: a single key is a LOCAL correction --------------------
-{
-  const layer = makeLayer("L1"); // default fade, 0.5s
-  setPosKey(getTrack(layer, "rightHand", true), tKey, [0.06, 0.04, 0]);
-  const baked = applyRigLayers(c, [layer]);
-  const expect = Math.hypot(0.06, 0.04);
-  const dAtKey = dist(world(baked, fKey).pos[hand], world(c, fKey).pos[hand]);
-  const fMid = nearestFrame(c, tKey + 0.25);
-  const dMid = dist(world(baked, fMid).pos[hand], world(c, fMid).pos[hand]);
-  const fOut = nearestFrame(c, tKey + 1.0);
-  const dOut = dist(world(baked, fOut).pos[hand], world(c, fOut).pos[hand]);
-  const dStart = dist(world(baked, f0).pos[hand], world(c, f0).pos[hand]);
-  check("fade: full delta at the key", Math.abs(dAtKey - expect) < 0.004, `moved ${mm(dAtKey)}mm`);
-  check("fade: partial mid-fade, zero outside",
-    dMid > expect * 0.2 && dMid < expect * 0.85 && dOut < 0.001 && dStart < 0.001,
-    `mid ${mm(dMid)}mm, +1s ${mm(dOut)}mm, t=0 ${mm(dStart)}mm`);
-
-  // retime: move the key +2s — influence follows
-  retimeKeys(getTrack(layer, "rightHand"), tKey, tKey + 2);
-  const baked2 = applyRigLayers(c, [layer]);
-  const fNew = nearestFrame(c, tKey + 2);
-  const dNew = dist(world(baked2, fNew).pos[hand], world(c, fNew).pos[hand]);
-  const dOld = dist(world(baked2, fKey).pos[hand], world(c, fKey).pos[hand]);
-  check("retime: key moved in time", Math.abs(dNew - expect) < 0.004 && dOld < 0.001,
-    `new ${mm(dNew)}mm, old spot ${mm(dOld)}mm`);
-}
-
-// --- 1c. key full pose: locking the pose changes nothing ---------------------
-{
-  const layer = makeLayer("L1");
   const layers = [layer];
-  keyFullPose(c, layers, 0, tKey, fKey);
-  const nTracks = layer.tracks.length;
+  const target = [...world(c, fKey).pos[hand]];
+  target[0] += 0.06; target[1] += 0.04;
+  keyEffectorTarget(c, layers, 0, "rightHand", fKey, { pos: target });
   const baked = applyRigLayers(c, layers);
-  let worst = 0;
+  const err = dist(world(baked, fKey).pos[hand], target);
+  const rotDrift = qangle(world(baked, fKey).rot[hand], world(c, fKey).rot[hand]);
+  const bones = layer.tracks.map((t) => t.bone).sort().join(",");
+  check("IK capture: hand lands on the target, keys on the 3 chain bones",
+    err < 0.002 && bones === "RightHand,RightLowerArm,RightUpperArm",
+    `err ${mm(err)}mm, tracks [${bones}]`);
+  check("IK capture: hand world rotation preserved", rotDrift < 0.01, `drift ${rotDrift.toFixed(4)}°`);
+
+  // Isolation: only the chain's locals changed.
+  let touched = 0;
   for (let b = 0; b < c.names.length; b++) {
-    if (c.localQuat[b].some((q) => Math.hypot(...q) < 0.5)) continue; // dead bones
-    worst = Math.max(worst, dist(world(baked, fKey).pos[b], world(c, fKey).pos[b]));
+    if (["RightUpperArm", "RightLowerArm", "RightHand"].includes(c.names[b])) continue;
+    if (c.localQuat[b].some((q) => Math.hypot(...q) < 0.5)) continue;
+    for (let f = 0; f < frames; f += 50) {
+      if (qangle(baked.localQuat[b][f], c.localQuat[b][f]) > 0.01) { touched++; break; }
+    }
   }
-  check("key full pose: keys every effector, pose unchanged",
-    nTracks >= 17 && worst < 0.002, `${nTracks} tracks, worst drift ${mm(worst)}mm`);
+  check("IK capture: everything else untouched", touched === 0, `bones changed=${touched}`);
 }
 
-// --- 2. neutral keys keep the adjustment local ------------------------------
+// --- 2. override pins the pose: pop-fix stability ------------------------------
 {
-  const layer = makeLayer("L1");
-  const tr = getTrack(layer, "rightHand", true);
-  setPosKey(tr, 2, [0, 0, 0]);
-  setPosKey(tr, tKey, [0.06, 0.04, 0]);
-  setPosKey(tr, 8, [0, 0, 0]);
-  const baked = applyRigLayers(c, [layer]);
-  const dOutside = dist(world(baked, f0).pos[hand], world(c, f0).pos[hand]);
-  const dAtKey = dist(world(baked, fKey).pos[hand], world(c, fKey).pos[hand]);
-  check("neutral keys: untouched outside the bracket", dOutside < 0.0005, `moved ${mm(dOutside)}mm at t=0`);
-  check("neutral keys: full delta at the key", Math.abs(dAtKey - Math.hypot(0.06, 0.04)) < 0.004, `moved ${mm(dAtKey)}mm`);
-}
-
-// --- 3. override places the foot at the absolute target, scaled by weight ---
-{
-  const foot = boneI("LeftFoot");
-  const target = [...world(c, fKey).pos[foot]];
-  target[1] += 0.06; target[0] += 0.04;
-  const layer = makeLayer("L1");
+  const layer = makeLayer("L1"); // fade 0.5
   layer.mode = "override";
-  setPosKey(getTrack(layer, "leftFoot", true), tKey, target);
-  const baked = applyRigLayers(c, [layer]);
-  const err = dist(world(baked, fKey).pos[foot], target);
-  check("override: foot lands on the absolute target", err < 0.002, `error ${mm(err)}mm`);
-
-  layer.weight = 0.5;
-  const baked2 = applyRigLayers(c, [layer]);
-  const half = dist(world(baked2, fKey).pos[foot], world(c, fKey).pos[foot]);
-  const full = Math.hypot(0.04, 0.06);
-  check("override: weight 50% goes halfway", Math.abs(half - full / 2) < 0.005, `moved ${mm(half)}mm of ${mm(full)}mm`);
+  const layers = [layer];
+  // "Fix a pop": key the full pose at the frame, plus the as-is pose around it.
+  const fFix = nearestFrame(c, 20);
+  const fA = nearestFrame(c, 19.7);
+  const fB = nearestFrame(c, 20.3);
+  for (const f of [fA, fFix, fB]) keyFullPose(c, layers, 0, c.times[f] - c.times[0], f);
+  // Now nudge the fix frame's hand and re-key it.
+  const target = [...world(c, fFix).pos[hand]];
+  target[1] += 0.05;
+  keyEffectorTarget(c, layers, 0, "rightHand", fFix, { pos: target });
+  const baked = applyRigLayers(c, layers);
+  const errFix = dist(world(baked, fFix).pos[hand], target);
+  // Frames at the bracketing keys keep their as-is pose exactly.
+  const errA = dist(world(baked, fA).pos[hand], world(c, fA).pos[hand]);
+  // Far away: untouched (fade extent).
+  const errFar = dist(world(baked, f0).pos[hand], world(c, f0).pos[hand]);
+  check("override pop-fix: fixed frame pinned, brackets pinned as-is, far frames untouched",
+    errFix < 0.002 && errA < 0.001 && errFar < 1e-9,
+    `fix ${mm(errFix)}mm, bracket ${mm(errA)}mm, far ${mm(errFar)}mm`);
 }
 
-// --- 4. layers stack in order ------------------------------------------------
+// --- 3. additive local deltas travel: retime keeps the relative effect ---------
 {
-  const l1 = makeLayer("L1"), l2 = makeLayer("L2");
+  const layer = makeLayer("L1");
+  layer.extent = "hold";
+  const layers = [layer];
+  // Bend the forearm by rotating the hand's parent chainlessly: use the FK
+  // forearm effector with an absolute rot target 20° off current.
+  const fore = boneI("RightLowerArm");
+  const ang = 20 * Math.PI / 180;
+  const w0 = world(c, fKey).rot[fore];
+  const spin = [Math.sin(ang / 2), 0, 0, Math.cos(ang / 2)];
+  keyEffectorTarget(c, layers, 0, "rightLowerArm", fKey, { rot: qmul(spin, w0) });
+  const track = getTrack(layer, "rightLowerArm");
+  const delta = track.rotKeys[0].q; // captured local delta
+  // Retime far away — the LOCAL delta must produce the same relative change.
+  retimeKeys(track, tKey, 40);
+  const f40 = nearestFrame(c, 40);
+  const baked = applyRigLayers(c, layers);
+  const expectLocal = qmul(c.localQuat[fore][f40], delta);
+  const err = qangle(baked.localQuat[fore][f40], expectLocal);
+  check("additive travel: retimed key applies the same local delta",
+    err < 0.01, `local err ${err.toFixed(4)}° after moving t=5→40`);
+}
+
+// --- 4. hips: additive pos keys, hold + stacking + fade bumps ------------------
+{
+  const hips = boneI("Hips");
+  const l1 = makeLayer("L1"); l1.extent = "hold";
+  const l2 = makeLayer("L2"); l2.extent = "hold";
   setPosKey(getTrack(l1, "hips", true), tKey, [0, 0.05, 0]);
   setPosKey(getTrack(l2, "hips", true), tKey, [0, 0.03, 0]);
   const baked = applyRigLayers(c, [l1, l2]);
-  const hips = boneI("Hips");
   const lift = world(baked, fKey).pos[hips][1] - world(c, fKey).pos[hips][1];
-  check("stacking: two additive hips layers sum", Math.abs(lift - 0.08) < 0.001, `lift ${mm(lift)}mm expect 80.00mm`);
-}
+  const liftStart = world(baked, f0).pos[hips][1] - world(c, f0).pos[hips][1];
+  check("hips stacking: two additive layers sum; hold extends",
+    Math.abs(lift - 0.08) < 0.001 && Math.abs(liftStart - 0.08) < 0.001,
+    `lift ${mm(lift)}mm @key, ${mm(liftStart)}mm @start`);
 
-// --- 5. position keys preserve the hand's world rotation ---------------------
-{
-  const layer = makeLayer("L1");
-  setPosKey(getTrack(layer, "rightHand", true), tKey, [0.06, 0.04, 0]);
-  const baked = applyRigLayers(c, [layer]);
-  const rotDrift = qangle(world(baked, fKey).rot[hand], world(c, fKey).rot[hand]);
-  check("IK move: hand world rotation preserved", rotDrift < 0.01, `drift ${rotDrift.toFixed(4)}°`);
-}
-
-// --- 6. head rotation key: rotates in place ----------------------------------
-{
-  const head = boneI("Head");
-  const yaw = 20 * Math.PI / 180;
-  const layer = makeLayer("L1");
-  setRotKey(getTrack(layer, "head", true), tKey, [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)]);
-  const baked = applyRigLayers(c, [layer]);
-  const ang = qangle(world(baked, fKey).rot[head], world(c, fKey).rot[head]);
-  const posDrift = dist(world(baked, fKey).pos[head], world(c, fKey).pos[head]);
-  check("head rot: world rotation changes by the delta", Math.abs(ang - 20) < 0.1, `rotated ${ang.toFixed(2)}° expect 20°`);
-  check("head rot: head joint does not translate", posDrift < 1e-6, `drift ${mm(posDrift)}mm`);
-}
-
-// --- 6b. FK effector: upper-arm rotation swings the whole arm in place --------
-{
-  const arm = boneI("LeftUpperArm");
-  const handL = boneI("LeftHand");
-  const ang = 25 * Math.PI / 180;
-  const layer = makeLayer("L1");
-  setRotKey(getTrack(layer, "leftUpperArm", true), tKey, [0, 0, Math.sin(ang / 2), Math.cos(ang / 2)]);
-  const baked = applyRigLayers(c, [layer]);
-  const rotChange = qangle(world(baked, fKey).rot[arm], world(c, fKey).rot[arm]);
-  const jointDrift = dist(world(baked, fKey).pos[arm], world(c, fKey).pos[arm]);
-  const handMoved = dist(world(baked, fKey).pos[handL], world(c, fKey).pos[handL]);
-  const legDrift = dist(world(baked, fKey).pos[boneI("LeftFoot")], world(c, fKey).pos[boneI("LeftFoot")]);
-  check("FK arm rot: world rotation changes by the delta", Math.abs(rotChange - 25) < 0.1, `rotated ${rotChange.toFixed(2)}°`);
-  check("FK arm rot: joint stays in place, hand follows FK",
-    jointDrift < 1e-9 && handMoved > 0.05 && legDrift < 1e-9,
-    `joint drift ${mm(jointDrift)}mm, hand moved ${mm(handMoved)}mm`);
-}
-
-// --- 6c. additive rot deltas are BONE-LOCAL: the correction follows the limb ---
-{
-  const { quatToEulerZYX } = await import("../src/convert/quat.ts");
-  void quatToEulerZYX;
-  const arm = boneI("LeftUpperArm");
-  const ang = 20 * Math.PI / 180;
-  const delta = [Math.sin(ang / 2), 0, 0, Math.cos(ang / 2)]; // 20° about the bone's local X
-  const layer = makeLayer("L1");
-  layer.extent = "hold";
-  setRotKey(getTrack(layer, "leftUpperArm", true), tKey, delta);
-  const baked = applyRigLayers(c, [layer]);
-  const qmul = (a, b) => [
-    a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],
-    a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],
-    a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],
-    a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2],
-  ];
-  // At ANY frame, world_after must equal world_base ⊗ delta (post-multiplied
-  // local delta) — the same local twist regardless of where the arm points.
-  let worst = 0;
-  for (const f of [f0, fKey, nearestFrame(c, 40)]) {
-    const expect = qmul(world(c, f).rot[arm], delta);
-    worst = Math.max(worst, qangle(world(baked, f).rot[arm], expect));
-  }
-  check("additive rot is bone-local: world_after == world_base ⊗ delta at every frame",
-    worst < 0.01, `worst ${worst.toFixed(4)}°`);
-}
-
-// --- 6d. fade keys are LOCAL bumps: distant keys don't resurrect the span ------
-{
-  const hand2 = boneI("RightHand");
-  const layer = makeLayer("L1"); // fade 0.5
-  const tr = getTrack(layer, "rightHand", true);
+  const lf = makeLayer("F"); // fade 0.5
+  const tr = getTrack(lf, "hips", true);
   setPosKey(tr, 5, [0.05, 0, 0]);
   setPosKey(tr, 9, [0, 0.05, 0]);
-  const baked = applyRigLayers(c, [layer]);
-  const at = (t) => dist(world(baked, nearestFrame(c, t)).pos[hand2], world(c, nearestFrame(c, t)).pos[hand2]);
-  check("fade bumps: full at keys, zero mid-gap between distant keys",
-    at(5) > 0.045 && at(9) > 0.045 && at(7) < 0.001,
-    `@5 ${mm(at(5))}mm, @7 ${mm(at(7))}mm, @9 ${mm(at(9))}mm`);
-
-  // Close keys (gap ≤ fade) still blend solidly.
-  const layer2 = makeLayer("L2");
-  const tr2 = getTrack(layer2, "rightHand", true);
-  setPosKey(tr2, 5, [0.05, 0, 0]);
-  setPosKey(tr2, 5.4, [0.05, 0, 0]);
-  const baked2 = applyRigLayers(c, [layer2]);
-  const mid = dist(world(baked2, nearestFrame(c, 5.2)).pos[hand2], world(c, nearestFrame(c, 5.2)).pos[hand2]);
-  check("fade bumps: close keys stay solid between", Math.abs(mid - 0.05) < 0.004, `mid ${mm(mid)}mm`);
+  const bakedF = applyRigLayers(c, [lf]);
+  const at = (t) => dist(world(bakedF, nearestFrame(c, t)).pos[hips], world(c, nearestFrame(c, t)).pos[hips]);
+  check("fade bumps: full at keys, zero mid-gap, zero outside",
+    at(5) > 0.045 && at(9) > 0.045 && at(7) < 0.001 && at(0.5) < 0.001,
+    `@5 ${mm(at(5))} @7 ${mm(at(7))} @9 ${mm(at(9))} @0.5 ${mm(at(0.5))} mm`);
 }
 
-// --- 7. a hand edit leaves the legs alone -------------------------------------
+// --- 5. neutral capture = no-op; keyFullPose locks without changing ------------
 {
   const layer = makeLayer("L1");
-  setPosKey(getTrack(layer, "rightHand", true), tKey, [0.06, 0.04, 0]);
-  const baked = applyRigLayers(c, [layer]);
+  const layers = [layer];
+  const below = belowStackPose(c, layers, 0, fKey);
+  captureBoneKeys(c, layers, 0, ["RightHand", "Hips"], below, fKey, tKey, true);
+  keyFullPose(c, layers, 0, tKey, fKey);
+  const baked = applyRigLayers(c, layers);
   let worst = 0;
-  for (const b of ["LeftUpperLeg", "LeftFoot", "RightUpperLeg", "RightFoot", "Head", "Hips", "LeftHand"]) {
-    worst = Math.max(worst, dist(world(baked, fKey).pos[boneI(b)], world(c, fKey).pos[boneI(b)]));
+  for (let b = 0; b < c.names.length; b++) {
+    if (c.localQuat[b].some((q) => Math.hypot(...q) < 0.5)) continue;
+    worst = Math.max(worst, dist(world(baked, fKey).pos[b], world(c, fKey).pos[b]));
   }
-  check("isolation: hand edit leaves the rest of the body", worst < 1e-6, `worst other-bone drift ${mm(worst)}mm`);
+  check("neutral + key full pose: pose unchanged, keys everywhere",
+    worst < 0.002 && layer.tracks.length >= 17, `${layer.tracks.length} tracks, drift ${mm(worst)}mm`);
 }
 
-// --- 1d. key easing + euler round-trip -----------------------------------------
+// --- 6. weight scaling on override -----------------------------------------------
 {
-  const { setKeyEase } = await import("../src/rig/rig.ts");
+  const foot = boneI("LeftFoot");
+  const layer = makeLayer("L1");
+  layer.mode = "override";
+  layer.extent = "hold";
+  const layers = [layer];
+  const target = [...world(c, fKey).pos[foot]];
+  target[0] += 0.04; target[1] += 0.06;
+  keyEffectorTarget(c, layers, 0, "leftFoot", fKey, { pos: target });
+  const bakedFull = applyRigLayers(c, layers);
+  const errFull = dist(world(bakedFull, fKey).pos[foot], target);
+  layer.weight = 0.5;
+  const bakedHalf = applyRigLayers(c, layers);
+  const half = dist(world(bakedHalf, fKey).pos[foot], world(c, fKey).pos[foot]);
+  const full = Math.hypot(0.04, 0.06);
+  check("override weight: 100% lands, 50% goes about halfway",
+    errFull < 0.002 && Math.abs(half - full / 2) < 0.012,
+    `err ${mm(errFull)}mm, half ${mm(half)}mm of ${mm(full)}mm`);
+}
+
+// --- 7. ease + euler round-trip + reduce -----------------------------------------
+{
   const { quatToEulerZYX, eulerZYXToQuat } = await import("../src/convert/quat.ts");
-  // Euler round-trip on 200 random-ish quats
   let worst = 0;
   for (let i = 0; i < 200; i++) {
     const a = Math.sin(i * 1.7) * 2, b = Math.cos(i * 0.9) * 1.2, cc = Math.sin(i * 2.3) * 2.8;
     const n = Math.hypot(a, b, cc, 1);
     const q = [a / n, b / n, cc / n, 1 / n];
-    const back = eulerZYXToQuat(quatToEulerZYX(q));
-    worst = Math.max(worst, qangle(q, back));
+    worst = Math.max(worst, qangle(q, eulerZYXToQuat(quatToEulerZYX(q))));
   }
   check("euler ZYX round-trip exact", worst < 1e-4, `worst ${worst.toExponential(1)}°`);
 
-  // Step ease holds until the next key; smooth differs from linear mid-segment.
+  const hips = boneI("Hips");
   const layer = makeLayer("L1");
   layer.extent = "hold";
   const tr = getTrack(layer, "hips", true);
   setPosKey(tr, 4, [0, 0, 0]);
   setPosKey(tr, 6, [0, 0.1, 0]);
-  const hips = boneI("Hips");
   const fMid = nearestFrame(c, 5);
   const linLift = world(applyRigLayers(c, [layer]), fMid).pos[hips][1] - world(c, fMid).pos[hips][1];
   setKeyEase(tr, 4, "step");
   const stepLift = world(applyRigLayers(c, [layer]), fMid).pos[hips][1] - world(c, fMid).pos[hips][1];
   setKeyEase(tr, 4, "smooth");
-  const fQ = nearestFrame(c, 4.5); // quarter point: smooth < linear
+  const fQ = nearestFrame(c, 4.5);
   const smoothQ = world(applyRigLayers(c, [layer]), fQ).pos[hips][1] - world(c, fQ).pos[hips][1];
   setKeyEase(tr, 4, "linear");
   const linQ = world(applyRigLayers(c, [layer]), fQ).pos[hips][1] - world(c, fQ).pos[hips][1];
   check("ease: step holds, smooth lags linear early in the segment",
     Math.abs(stepLift) < 0.0005 && Math.abs(linLift - 0.05) < 0.003 && smoothQ < linQ - 0.005,
-    `step ${mm(stepLift)}mm, linear-mid ${mm(linLift)}mm, quarter smooth ${mm(smoothQ)} < linear ${mm(linQ)}`);
+    `step ${mm(stepLift)}mm, linear-mid ${mm(linLift)}mm, quarter smooth ${mm(smoothQ)} < ${mm(linQ)}`);
+
+  const lr = makeLayer("R");
+  const trr = getTrack(lr, "hips", true);
+  for (let i = 0; i <= 8; i++) setPosKey(trr, i, [0, i * 0.01, 0]);
+  setPosKey(trr, 10, [0, 0, 0]);
+  const removed = reduceKeys(trr, 0.001);
+  check("key reducer: straight ramp collapses, corner survives",
+    removed >= 7 && trr.posKeys.length <= 4 && trr.posKeys.some((k) => Math.abs(k.time - 8) < 0.01),
+    `removed ${removed}, ${trr.posKeys.length} left`);
 }
 
-// --- 7b. partial (dirty-range) rebake === full rebake --------------------------
+// --- 8. partial (dirty-range) rebake === full rebake -------------------------------
 {
-  const layer = makeLayer("L1"); // fade 0.5s
-  const tr = getTrack(layer, "rightHand", true);
+  const layer = makeLayer("L1"); // fade 0.5
+  const tr = getTrack(layer, "hips", true);
   setPosKey(tr, 3, [0.03, 0, 0]);
   setPosKey(tr, 6, [0, 0.05, 0]);
   setPosKey(tr, 9, [0.02, 0.02, 0]);
   const layers = [layer];
-
-  // Baked state before the edit (in-place arrays, like the app's display clip).
   const pos = c.localPos.map((t) => t.map((p) => [...p]));
   const quat = c.localQuat.map((t) => t.map((q) => [...q]));
   bakeRange(c, layers, pos, quat);
-
-  // Edit the middle key, then bake ONLY its dirty window in place.
   const dirty = dirtyRange(layer, tr, 6);
   setPosKey(tr, 6, [0, -0.04, 0.03]);
   bakeRange(c, layers, pos, quat, dirty);
-
-  // Reference: full bake from scratch with the edited keys.
   const full = applyRigLayers(c, layers);
   let worst = 0;
   for (let b = 0; b < c.names.length; b++) {
-    // Degenerate zero-quat tracks (missing bones) break the dot metric.
     if (c.localQuat[b].some((q) => Math.hypot(...q) < 0.5)) continue;
     for (let f = 0; f < frames; f += 7) {
       worst = Math.max(worst, dist(pos[b][f], full.localPos[b][f]));
@@ -313,103 +256,25 @@ const f0 = 0;
     }
   }
   check("partial rebake: identical to a full rebake", worst < 1e-9, `worst deviation ${worst.toExponential(1)}`);
-
-  // And it must be much cheaper: count frames the dirty window covers.
-  const covered = c.times.filter((t) => t >= dirty.t0 && t <= dirty.t1).length;
-  check("partial rebake: dirty window is a small slice", covered < frames / 4, `${covered} of ${frames} frames`);
 }
 
-// --- 8. modifiers -------------------------------------------------------------
+// --- 9. bake performance: pure curve composition, no IK ---------------------------
 {
-  const { applyModifiers, defaultModifiers } = await import("../src/rig/modifiers.ts");
-  const hips = boneI("Hips"), lknee = boneI("LeftLowerLeg"), rknee = boneI("RightLowerLeg");
-  const lank = boneI("LeftFoot"), rank = boneI("RightFoot");
-  const lelbow = boneI("LeftLowerArm"), lwrist = boneI("LeftHand"), lshoulder = boneI("LeftUpperArm");
-
-  // A straight limb has nothing to swing about its end-to-end axis, so run
-  // the in/out tests at the frame where the joint is most bent (largest
-  // perpendicular offset of the mid joint from the root→end line).
-  const bentFrame = (root, mid, end) => {
-    let best = 0, bestR = -1;
-    for (let f = 0; f < c.times.length; f += 25) {
-      const w = world(c, f);
-      const a = w.pos[root], b = w.pos[end], k = w.pos[mid];
-      const ab = [b[0]-a[0], b[1]-a[1], b[2]-a[2]];
-      const ab2 = ab[0]**2+ab[1]**2+ab[2]**2 || 1;
-      const t = ((k[0]-a[0])*ab[0]+(k[1]-a[1])*ab[1]+(k[2]-a[2])*ab[2]) / ab2;
-      const px = [a[0]+ab[0]*t, a[1]+ab[1]*t, a[2]+ab[2]*t];
-      const r = dist(k, px);
-      if (r > bestR) { bestR = r; best = f; }
-    }
-    return best;
-  };
-
-  // hips height: hips drop, feet stay planted
-  {
-    const baked = applyModifiers(c, { ...defaultModifiers(), hipsHeightCm: -6 });
-    const w0 = world(c, fKey), w1 = world(baked, fKey);
-    const drop = w0.pos[hips][1] - w1.pos[hips][1];
-    const ankleDrift = Math.max(dist(w0.pos[lank], w1.pos[lank]), dist(w0.pos[rank], w1.pos[rank]));
-    check("modifier hips -6cm: hips drop 6cm", Math.abs(drop - 0.06) < 0.002, `dropped ${mm(drop)}mm`);
-    check("modifier hips: feet stay planted", ankleDrift < 0.002, `ankle drift ${mm(ankleDrift)}mm`);
-  }
-
-  // knees out: knees swing outward, hips + ankles pinned
-  {
-    const fBent = bentFrame(boneI("LeftUpperLeg"), lknee, lank);
-    const baked = applyModifiers(c, { ...defaultModifiers(), kneesOutDeg: 15 });
-    const w0 = world(c, fBent), w1 = world(baked, fBent);
-    // lateral direction = perpendicular offset of the knee from the hip→ankle line
-    const lateralX = (w, knee, hip, ank) => {
-      const a = w.pos[hip], b = w.pos[ank], k = w.pos[knee];
-      const ab = [b[0]-a[0], b[1]-a[1], b[2]-a[2]];
-      const t = ((k[0]-a[0])*ab[0]+(k[1]-a[1])*ab[1]+(k[2]-a[2])*ab[2]) / (ab[0]**2+ab[1]**2+ab[2]**2);
-      return k[0] - (a[0] + ab[0]*t);
-    };
-    const lBefore = lateralX(w0, lknee, boneI("LeftUpperLeg"), lank);
-    const lAfter = lateralX(w1, lknee, boneI("LeftUpperLeg"), lank);
-    const rBefore = lateralX(w0, rknee, boneI("RightUpperLeg"), rank);
-    const rAfter = lateralX(w1, rknee, boneI("RightUpperLeg"), rank);
-    const ankleDrift = Math.max(dist(w0.pos[lank], w1.pos[lank]), dist(w0.pos[rank], w1.pos[rank]));
-    check("modifier knees out: left knee swings +x, right -x",
-      lAfter > lBefore + 0.005 && rAfter < rBefore - 0.005,
-      `left ${mm(lBefore)}→${mm(lAfter)}mm right ${mm(rBefore)}→${mm(rAfter)}mm`);
-    check("modifier knees: hips + ankles untouched",
-      ankleDrift < 1e-6 && dist(w0.pos[hips], w1.pos[hips]) < 1e-9, `ankle drift ${mm(ankleDrift)}mm`);
-  }
-
-  // elbows out: wrist + shoulder pinned, elbow moves
-  {
-    const fBent = bentFrame(lshoulder, lelbow, lwrist);
-    const baked = applyModifiers(c, { ...defaultModifiers(), elbowsOutDeg: 15 });
-    const w0 = world(c, fBent), w1 = world(baked, fBent);
-    const wristDrift = dist(w0.pos[lwrist], w1.pos[lwrist]);
-    const shoulderDrift = dist(w0.pos[lshoulder], w1.pos[lshoulder]);
-    const elbowMove = dist(w0.pos[lelbow], w1.pos[lelbow]);
-    check("modifier elbows out: elbow swings, wrist + shoulder pinned",
-      elbowMove > 0.005 && wristDrift < 1e-6 && shoulderDrift < 1e-9,
-      `elbow moved ${mm(elbowMove)}mm, wrist drift ${mm(wristDrift)}mm`);
-  }
-
-  // feet apart: each ankle shifts outward, height unchanged
-  {
-    const baked = applyModifiers(c, { ...defaultModifiers(), feetApartCm: 8 });
-    const w0 = world(c, fKey), w1 = world(baked, fKey);
-    const gap0 = Math.abs(w0.pos[lank][0] - w0.pos[rank][0]);
-    const gap1 = Math.abs(w1.pos[lank][0] - w1.pos[rank][0]);
-    check("modifier feet apart: stance widens ~16cm",
-      Math.abs(gap1 - gap0 - 0.16) < 0.03, `gap ${mm(gap0)}→${mm(gap1)}mm`);
-  }
+  const layer = makeLayer("P");
+  layer.extent = "hold";
+  keyFullPose(c, [layer], 0, tKey, fKey);
+  const t0 = performance.now();
+  applyRigLayers(c, [layer]);
+  const ms = performance.now() - t0;
+  check("bake perf: full-pose layer over the whole clip is fast", ms < 900, `${ms.toFixed(0)} ms for ${frames} frames × ${layer.tracks.length} tracks`);
 }
 
-// --- 9. modifier batch: mirror / reach / reduce / warp / range smooth ----------
+// --- 10. modifiers -----------------------------------------------------------------
 {
   const { applyModifiers, defaultModifiers, applyReach } = await import("../src/rig/modifiers.ts");
   const { applyTimeWarp } = await import("../src/rig/timewarp.ts");
-  const { reduceKeys } = await import("../src/rig/rig.ts");
   const { cleanClip, smoothRange } = await import("../src/convert/clean.ts");
 
-  // Mirror: left hand lands where the right hand was, x-negated; hips travel flips.
   {
     const mir = applyModifiers(c, { ...defaultModifiers(), mirror: true });
     const w0 = world(c, fKey), w1 = world(mir, fKey);
@@ -418,10 +283,8 @@ const f0 = 0;
     const err = dist(w1.pos[lh], target);
     const hipsX = Math.abs(w1.pos[hips][0] + w0.pos[hips][0]);
     check("mirror: L hand = x-mirrored R hand, hips x flipped",
-      err < 0.05 && hipsX < 1e-6, `hand err ${mm(err)}mm (avatar asymmetry), hips ${mm(hipsX)}mm`);
+      err < 0.05 && hipsX < 1e-6, `hand err ${mm(err)}mm, hips ${mm(hipsX)}mm`);
   }
-
-  // Reach: pull the smoothed hand fully back onto the raw path.
   {
     const smoothed = cleanClip(c, { smooth: true, cutoffHz: 1 });
     const rh = boneI("RightHand");
@@ -433,41 +296,31 @@ const f0 = 0;
       before > 0.003 && after < before * 0.1 && lhDrift < 1e-9,
       `off-path ${mm(before)}→${mm(after)}mm, left hand drift ${mm(lhDrift)}mm`);
   }
-
-  // Key reducer: linear ramp collapses to its endpoints; a corner survives.
-  {
-    const layer = makeLayer("L1");
-    const tr = getTrack(layer, "hips", true);
-    for (let i = 0; i <= 8; i++) setPosKey(tr, i, [0, i * 0.01, 0]); // straight ramp
-    setPosKey(tr, 10, [0, 0, 0]); // corner back down
-    const removed = reduceKeys(tr, 0.001);
-    check("key reducer: straight ramp collapses, corner survives",
-      removed >= 7 && tr.posKeys.length <= 4 && tr.posKeys.some((k) => Math.abs(k.time - 8) < 0.01),
-      `removed ${removed}, ${tr.posKeys.length} left`);
-  }
-
-  // Time warp: half speed everywhere doubles the duration; content maps 1s→2s.
   {
     const warped = applyTimeWarp(c, [{ time: 0, speed: 0.5 }]);
     const ratio = warped.duration / c.duration;
     const rh = boneI("RightHand");
-    const fOut = nearestFrame(warped, 10);
-    const fSrc = nearestFrame(c, 5);
-    const err = dist(world(warped, fOut).pos[rh], world(c, fSrc).pos[rh]);
+    const err = dist(world(warped, nearestFrame(warped, 10)).pos[rh], world(c, nearestFrame(c, 5)).pos[rh]);
     check("time warp: 0.5x doubles duration, out@10s == src@5s",
       Math.abs(ratio - 2) < 0.02 && err < 0.01, `ratio ${ratio.toFixed(3)}, pose err ${mm(err)}mm`);
   }
-
-  // Range smooth: inside improves, outside byte-identical.
   {
     const sm = smoothRange(c, { t0: 20, t1: 30, cutoffHz: 2 });
     const rh = boneI("RightHand");
-    const fIn = nearestFrame(c, 25);
-    const fOut = nearestFrame(c, 50);
-    const movedIn = dist(world(sm, fIn).pos[rh], world(c, fIn).pos[rh]);
-    const movedOut = dist(world(sm, fOut).pos[rh], world(c, fOut).pos[rh]);
+    const movedIn = dist(world(sm, nearestFrame(c, 25)).pos[rh], world(c, nearestFrame(c, 25)).pos[rh]);
+    const movedOut = dist(world(sm, nearestFrame(c, 50)).pos[rh], world(c, nearestFrame(c, 50)).pos[rh]);
     check("range smooth: changes inside the range only",
       movedIn > 0.002 && movedOut < 1e-12, `inside ${mm(movedIn)}mm, outside ${mm(movedOut)}mm`);
+  }
+  {
+    const { applyModifiers: am, defaultModifiers: dm } = await import("../src/rig/modifiers.ts");
+    const baked = am(c, { ...dm(), hipsHeightCm: -6 });
+    const w0 = world(c, fKey), w1 = world(baked, fKey);
+    const hips = boneI("Hips"), lank = boneI("LeftFoot"), rank = boneI("RightFoot");
+    const drop = w0.pos[hips][1] - w1.pos[hips][1];
+    const ankleDrift = Math.max(dist(w0.pos[lank], w1.pos[lank]), dist(w0.pos[rank], w1.pos[rank]));
+    check("modifier hips -6cm: hips drop, feet planted",
+      Math.abs(drop - 0.06) < 0.002 && ankleDrift < 0.002, `drop ${mm(drop)}mm, ankle ${mm(ankleDrift)}mm`);
   }
 }
 

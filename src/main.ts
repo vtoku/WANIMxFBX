@@ -4,12 +4,14 @@ import { convertCharacter, resample, retargetProportions, distributeBonelessSpin
 import { cleanClip, smoothRange, type CleanOpts, type CleanStats, type RangeSmooth } from "./convert/clean.ts";
 import {
   makeLayer, getTrack, setPosKey, setRotKey, deleteKeysAt, keyTimes,
-  applyRigLayers, applyLayersToPose, poseAtFrame, nearestFrame,
-  effectorBaseWorld, effectorDef, effectorColor, retimeKeys, keyFullPose,
+  applyRigLayers, nearestFrame,
+  effectorDef, effectorForBone, effectorColor, retimeKeys, keyFullPose,
   bakeRange, bakeRangeAsync, dirtyRange, unionRange, fkDragRef, setKeyEase, reduceKeys,
-  type RigLayer, type EffectorId, type Transient, type TimeRange,
+  fullStackPose, belowStackPose, clonePose, solveEffectorOnPose, captureBoneKeys,
+  type RigLayer, type EffectorId, type TimeRange, type EffectorTarget,
 } from "./rig/rig.ts";
-import { vsub, vadd, vlen, vnorm, qconj, quatFromTo } from "./convert/ik.ts";
+import { worldFromLocal, type FramePose } from "./convert/fk.ts";
+import { vsub, vadd, vlen, vnorm, quatFromTo } from "./convert/ik.ts";
 import { applyModifiers, defaultModifiers, applyReach, anyReach } from "./rig/modifiers.ts";
 import { applyTimeWarp, type WarpKey } from "./rig/timewarp.ts";
 import { quatMul, quatDot, quatNormalize, quatToEulerZYX, eulerZYXToQuat, RAD2DEG } from "./convert/quat.ts";
@@ -685,6 +687,8 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     for (const it of keyClipboard) {
       const tr = getTrack(layer, it.effector, true)!;
       const t = t0 + it.dt;
+      // Keys are LOCAL values/deltas — they reproduce the same adjustment at
+      // the destination without any base-dependent conversion.
       if (it.pos) setPosKey(tr, t, [...it.pos] as Vec3);
       if (it.rot) setRotKey(tr, t, [...it.rot] as Quat);
       const dr = dirtyRange(layer, tr, t);
@@ -777,16 +781,20 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         })
       : [];
     // Timeline markers for the active layer (cleared when there is none).
+    // Tracks are keyed by bone; each maps 1:1 to the effector that edits it.
+    const trackEff = (tr: { bone: string }) => effectorForBone(tr.bone)?.id;
     const markers = layer
-      ? layer.tracks.flatMap((tr) =>
-          keyTimes(tr).map((t) => ({
+      ? layer.tracks.flatMap((tr) => {
+          const eff = trackEff(tr);
+          if (!eff) return [];
+          return keyTimes(tr).map((t) => ({
             time: t,
-            color: effectorColor(tr.effector),
-            selected: tr.effector === selectedEffector,
-            picked: isPicked(tr.effector, t),
-            tag: tr.effector,
-          })),
-        )
+            color: effectorColor(eff),
+            selected: eff === selectedEffector,
+            picked: isPicked(eff, t),
+            tag: eff,
+          }));
+        })
       : [];
     const keyCbs = {
       onClick: (m, ctrl) => {
@@ -804,12 +812,32 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       },
       onRetime: (m, newTime) => {
         const lay = rigLayers[activeLayerIdx];
-        const tr = lay ? getTrack(lay, m.tag as EffectorId) : null;
-        if (!tr || !lay) return;
+        if (!lay || !rigBaseClip) return;
+        const eff = m.tag as EffectorId;
         pushHistory();
-        const before = dirtyRange(lay, tr, m.time);
-        retimeKeys(tr, m.time, newTime);
-        rebakeRig(unionRange(before, dirtyRange(lay, tr, newTime)));
+        // Dragging a key that's part of the selection slides the WHOLE
+        // selection by the same amount; each key's value is reconverted so
+        // the pose it produced travels with it.
+        const inGroup = isPicked(eff, m.time) && pickedKeys.length > 1;
+        const moves = inGroup ? pickedKeys.map((p) => ({ ...p })) : [{ effector: eff, time: m.time }];
+        const dt = newTime - m.time;
+        // Move in an order that can't collide with not-yet-moved members.
+        // Local-space key values travel correctly as-is.
+        moves.sort((a, b) => (dt > 0 ? b.time - a.time : a.time - b.time));
+        let dirty: TimeRange | null = null;
+        const newPicked: typeof pickedKeys = [];
+        for (const mv of moves) {
+          const tr = getTrack(lay, mv.effector);
+          if (!tr) continue;
+          const to = Math.max(0, Math.min(rigBaseClip.duration, mv.time + dt));
+          const before = dirtyRange(lay, tr, mv.time);
+          retimeKeys(tr, mv.time, to);
+          const after = dirtyRange(lay, tr, to);
+          dirty = dirty ? unionRange(unionRange(dirty, before), after) : unionRange(before, after);
+          newPicked.push({ effector: mv.effector, time: to });
+        }
+        pickedKeys = newPicked;
+        rebakeRig(dirty ?? undefined);
         updateRigEditor();
       },
       onContext: (m, x, y) => {
@@ -828,7 +856,10 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
             disabled: !lay,
             action: () => {
               pickedKeys = lay
-                ? lay.tracks.flatMap((tr) => keyTimes(tr).map((t) => ({ effector: tr.effector, time: t })))
+                ? lay.tracks.flatMap((tr) => {
+                    const eff = trackEff(tr);
+                    return eff ? keyTimes(tr).map((t) => ({ effector: eff, time: t })) : [];
+                  })
                 : [];
               updateRigEditor();
             },
@@ -839,9 +870,12 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       onBand: (t0, t1) => {
         const lay = rigLayers[activeLayerIdx];
         if (!lay) return;
-        pickedKeys = lay.tracks.flatMap((tr) =>
-          keyTimes(tr).filter((t) => t >= t0 && t <= t1).map((t) => ({ effector: tr.effector, time: t })),
-        );
+        pickedKeys = lay.tracks.flatMap((tr) => {
+          const eff = trackEff(tr);
+          return eff
+            ? keyTimes(tr).filter((t) => t >= t0 && t <= t1).map((t) => ({ effector: eff, time: t }))
+            : [];
+        });
         updateRigEditor();
       },
     } satisfies Parameters<NonNullable<typeof transport>["setKeys"]>[1];
@@ -850,19 +884,22 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     const dopeRows =
       activeTab === "rig" && layer
         ? layer.tracks
-            .filter((tr) => tr.posKeys.length + tr.rotKeys.length > 0)
-            .map((tr) => ({
-              tag: tr.effector,
-              label: effectorDef(tr.effector).label.replace("Left ", "L ").replace("Right ", "R "),
-              color: effectorColor(tr.effector),
-              keys: keyTimes(tr).map((t) => ({
-                time: t,
-                color: effectorColor(tr.effector),
-                selected: tr.effector === selectedEffector,
-                picked: isPicked(tr.effector, t),
-                tag: tr.effector,
-              })),
-            }))
+            .filter((tr) => (tr.posKeys.length + tr.rotKeys.length > 0) && trackEff(tr))
+            .map((tr) => {
+              const eff = trackEff(tr)!;
+              return {
+                tag: eff,
+                label: effectorDef(eff).label.replace("Left ", "L ").replace("Right ", "R "),
+                color: effectorColor(eff),
+                keys: keyTimes(tr).map((t) => ({
+                  time: t,
+                  color: effectorColor(eff),
+                  selected: eff === selectedEffector,
+                  picked: isPicked(eff, t),
+                  tag: eff,
+                })),
+              };
+            })
         : [];
     transport?.setDope(dopeRows, keyCbs);
 
@@ -873,7 +910,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       const def = effectorDef(selectedEffector!);
       const axisColor = ["#ff6b6b", "#7dda6b", "#6bb1ff"];
       const channels = [
-        ...(def.canMove
+        ...(def.bone === "Hips" // position keys live on the hips track only
           ? [0, 1, 2].map((axis) => ({
               group: "pos" as const,
               axis: axis as 0 | 1 | 2,
@@ -1147,20 +1184,16 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     const layer = rigLayers[activeLayerIdx];
     if (!layer || !selectedEffector || !rigBaseClip || !preview) return;
     const def = effectorDef(selectedEffector);
-    const t = preview.getTime();
-    const f = nearestFrame(rigBaseClip, t);
+    const f = nearestFrame(rigBaseClip, preview.getTime());
+    const t = rigBaseClip.times[f] - rigBaseClip.times[0];
     pushHistory();
-    const track = getTrack(layer, selectedEffector, true)!;
-    const dirty = dirtyRange(layer, track, t);
-    if (layer.mode === "additive") {
-      if (def.canMove) setPosKey(track, t, [0, 0, 0]);
-      if (def.canRotate) setRotKey(track, t, [0, 0, 0, 1]);
-    } else {
-      const base = effectorBaseWorld(rigBaseClip, rigLayers, activeLayerIdx, selectedEffector, f);
-      if (def.canMove) setPosKey(track, t, base.pos);
-      if (def.canRotate) setRotKey(track, t, base.rot);
-    }
-    rebakeRig(dirty);
+    // Neutral = key the below-stack pose: identity delta on additive layers,
+    // the unadjusted local value on override layers.
+    const below = belowStackPose(rigBaseClip, rigLayers, activeLayerIdx, f);
+    const dirty = captureBoneKeys(
+      rigBaseClip, rigLayers, activeLayerIdx, [def.bone], below, f, t, selectedEffector === "hips",
+    );
+    rebakeRig(dirty ?? undefined);
     updateRigEditor();
   });
 
@@ -1190,14 +1223,19 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     updateRigEditor();
   });
 
-  // Viewport drag → live single-frame solve → key on release.
+  // Viewport drag: the rig is an INPUT DEVICE — solve IK/FK once per pointer
+  // move on the full-stack pose (live preview), then on release capture the
+  // affected bones' LOCALS as layer keys. Evaluation never solves anything.
   let dragCtx: {
+    effector: EffectorId;
     f: number;
     t: number;
-    base: { pos: Vec3; rot: Quat };
-    start: { pos: Vec3; rot: Quat };
+    startPose: FramePose; // full stack at f, drag baseline
+    startWorld: { pos: Vec3; rot: Quat };
     fkRef: { joint: Vec3; tip: Vec3 } | null;
-    transient: Transient;
+    solved: FramePose | null;
+    bones: string[];
+    movedPos: boolean;
   } | null = null;
   preview?.setRigCallbacks({
     onSelect: (e) => {
@@ -1208,68 +1246,62 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       if (!loaded || !rigBaseClip || activeLayerIdx < 0) return false;
       const layer = rigLayers[activeLayerIdx];
       if (!layer.enabled) return false;
-      getTrack(layer, e, true);
-      // Snap to the exact frame: the key bakes per frame, so keying at an
-      // interpolated sub-frame time pops the pose against its neighbors.
+      // Snap to the exact frame: keys bake per frame; sub-frame keys pop.
       const f = nearestFrame(rigBaseClip, preview!.getTime());
       const t = rigBaseClip.times[f] - rigBaseClip.times[0];
       preview!.seek(t);
-      const base = effectorBaseWorld(rigBaseClip, rigLayers, activeLayerIdx, e, f);
-      const start = preview!.getEffectorWorld(e) ?? base;
-      // FK bones swing about their joint when PULLED (Poser style): pulling
-      // the chest forward leans it forward.
+      const startPose = fullStackPose(rigBaseClip, rigLayers, f);
+      const world = worldFromLocal(rigBaseClip.parents, startPose);
+      const b = rigBaseClip.names.indexOf(effectorDef(e).bone);
       const fkRef = effectorDef(e).canMove ? null : fkDragRef(rigBaseClip, rigLayers, e, f);
-      dragCtx = { f, t, base, start, fkRef, transient: { layerIndex: activeLayerIdx, effector: e } };
+      dragCtx = {
+        effector: e, f, t, startPose,
+        startWorld: { pos: world.pos[b], rot: world.rot[b] },
+        fkRef, solved: null, bones: [], movedPos: false,
+      };
       return true;
     },
     onDragMove: (pos, rot) => {
       if (!dragCtx || !rigBaseClip) return;
-      const layer = rigLayers[activeLayerIdx];
-      if (!layer) return; // deleted mid-drag; onDragEnd cleans up
-      const def = effectorDef(dragCtx.transient.effector);
-      // Route by what the input actually changed — the gizmo moves either
-      // position (translate / direct grab) or rotation (rotate rings).
-      const posMoved = vlen(vsub(pos, dragCtx.start.pos)) > 1e-5;
-      const rotMoved = 1 - Math.abs(quatDot(rot, dragCtx.start.rot)) > 1e-9;
+      if (!rigLayers[activeLayerIdx]) return; // deleted mid-drag
+      const def = effectorDef(dragCtx.effector);
+      const posMoved = vlen(vsub(pos, dragCtx.startWorld.pos)) > 1e-5;
+      const rotMoved = 1 - Math.abs(quatDot(rot, dragCtx.startWorld.rot)) > 1e-9;
+      const target: EffectorTarget = {};
       if (posMoved && def.canMove) {
-        dragCtx.transient.pos = layer.mode === "additive" ? vsub(pos, dragCtx.base.pos) : pos;
+        target.pos = pos;
+        dragCtx.movedPos = true;
       } else if (posMoved && dragCtx.fkRef) {
-        // Swing the bone so its tip chases the drag. Additive deltas live in
-        // the bone's OWN frame (post-multiplied), so the correction follows
-        // the limb through the fade instead of pointing at a fixed world axis.
-        const drag = vsub(pos, dragCtx.start.pos);
+        // Poser pull: swing the bone so its tip chases the drag.
+        const drag = vsub(pos, dragCtx.startWorld.pos);
         const dir0 = vnorm(vsub(dragCtx.fkRef.tip, dragCtx.fkRef.joint));
         const dir1 = vnorm(vsub(vadd(dragCtx.fkRef.tip, drag), dragCtx.fkRef.joint));
-        const swing = quatFromTo(dir0, dir1);
-        dragCtx.transient.rot =
-          layer.mode === "additive"
-            ? quatNormalize(quatMul(qconj(dragCtx.base.rot), quatMul(swing, dragCtx.base.rot)))
-            : quatNormalize(quatMul(swing, dragCtx.base.rot));
+        target.rot = quatNormalize(quatMul(quatFromTo(dir0, dir1), dragCtx.startWorld.rot));
       } else if (rotMoved && def.canRotate) {
-        dragCtx.transient.rot =
-          layer.mode === "additive" ? quatNormalize(quatMul(qconj(dragCtx.base.rot), rot)) : rot;
+        target.rot = rot;
+      } else {
+        return;
       }
-      const pose = poseAtFrame(rigBaseClip, dragCtx.f);
-      applyLayersToPose(pose, rigBaseClip.names, rigBaseClip.parents, rigLayers, dragCtx.t, dragCtx.transient);
-      preview?.setPoseOverride(pose);
+      const solved = clonePose(dragCtx.startPose);
+      const bones = solveEffectorOnPose(solved, rigBaseClip.names, rigBaseClip.parents, dragCtx.effector, target);
+      if (!bones.length) return;
+      dragCtx.solved = solved;
+      dragCtx.bones = bones;
+      preview?.setPoseOverride(solved);
     },
     onDragEnd: () => {
       if (!dragCtx) return;
       const layer = rigLayers[activeLayerIdx];
-      if (!layer) {
-        // The layer was deleted mid-drag — drop the edit cleanly.
-        dragCtx = null;
-        preview?.setPoseOverride(null);
-        return;
-      }
-      const track = getTrack(layer, dragCtx.transient.effector, true)!;
-      const dirty = dirtyRange(layer, track, dragCtx.t);
-      if (dragCtx.transient.pos || dragCtx.transient.rot) pushHistory();
-      if (dragCtx.transient.pos) setPosKey(track, dragCtx.t, dragCtx.transient.pos);
-      if (dragCtx.transient.rot) setRotKey(track, dragCtx.t, dragCtx.transient.rot);
+      const ctx = dragCtx;
       dragCtx = null;
       preview?.setPoseOverride(null);
-      rebakeRig(dirty);
+      if (!layer || !ctx.solved || !ctx.bones.length || !rigBaseClip) return;
+      pushHistory();
+      const dirty = captureBoneKeys(
+        rigBaseClip, rigLayers, activeLayerIdx, ctx.bones, ctx.solved, ctx.f, ctx.t,
+        ctx.effector === "hips" && ctx.movedPos,
+      );
+      rebakeRig(dirty ?? undefined);
       updateRigEditor();
     },
   });
@@ -1495,7 +1527,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       if (dirty) {
         localStorage.setItem(
           rigCacheKey,
-          JSON.stringify({ v: 2, layers: rigLayers, mods, counter: layerCounter, warp: warpKeys, ranges: rangeSmooths }),
+          JSON.stringify({ v: 3, layers: rigLayers, mods, counter: layerCounter, warp: warpKeys, ranges: rangeSmooths }),
         );
       } else {
         localStorage.removeItem(rigCacheKey);
@@ -1511,7 +1543,15 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     warp?: WarpKey[];
     ranges?: RangeSmooth[];
   }) {
-    rigLayers.splice(0, rigLayers.length, ...(Array.isArray(d.layers) ? d.layers : []));
+    // v3 moved keys from effector-space to bone-local tracks; older layer
+    // keys can't be converted meaningfully — drop them (mods/warp/ranges keep).
+    const layers = Array.isArray(d.layers)
+      ? d.layers.filter((l) => (l.tracks ?? []).every((tr) => typeof (tr as { bone?: unknown }).bone === "string"))
+      : [];
+    if (Array.isArray(d.layers) && layers.length < d.layers.length) {
+      rigCacheNote.textContent = "Rig keys from an older version couldn't be kept (key format changed in v0.26).";
+    }
+    rigLayers.splice(0, rigLayers.length, ...layers);
     for (const layer of rigLayers) {
       // Older saves may predate newer layer fields.
       layer.extent ??= "hold";
@@ -1552,7 +1592,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   (document.getElementById("rigSave") as HTMLButtonElement).addEventListener("click", () => {
     if (!loaded) return;
     const json = JSON.stringify(
-      { v: 2, layers: rigLayers, mods, counter: layerCounter, warp: warpKeys, ranges: rangeSmooths },
+      { v: 3, layers: rigLayers, mods, counter: layerCounter, warp: warpKeys, ranges: rangeSmooths },
       null,
       1,
     );
