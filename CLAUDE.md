@@ -80,10 +80,20 @@ No unit-test framework yet — the three `npm run` scripts above are the regress
   → src/fbx/animationFbx.ts: binary FBX — LimbNode skeleton + AnimationStack/Layer, per-bone Lcl Rotation
                           curves + Hips Lcl Translation curve, skinned meshes, BindPose, TPose take. meters→cm, Y-up.
   → src/convert/clean.ts: optional mocap cleaning — despike (pops/hand-flips via neighbour slerp), zero-phase Butterworth low-pass (filtfilt) on rotations + hips translation, twist/swing limits + locks for wrists AND forearms (twist about the bone axis toward the child joint), and feet-contact fixing (src/convert/feet.ts: floor estimated from data per foot — resting joint height varies per avatar, never assume y=0; contact = low AND slow with hysteresis; ankle pinned per plant via two-bone leg IK, recorded knee as pole, foot keeps recorded world rotation; runs LAST so smoothing can't reintroduce drift; writes leg-chain rotations only). Applied to the converted clip so it shows in preview AND export. The cleaning panel has a hold-to-compare button; preview.setClip(clip, keepView=true) keeps camera + playhead (also why filter toggles don't reset the view).
-  → src/rig/rig.ts + modifiers.ts: MotionBuilder-style control rig, baked AFTER cleaning/proportions/spine.
-                          Modifiers = whole-clip slider corrections (hips height with feet re-solved onto their
-                          original targets, knees/elbows in-out via rigid rotation of the two-bone limb about its
-                          end-to-end axis — swings ONLY the mid joint, closed form, no IK — and stance width).
+  → src/rig/rig.ts + modifiers.ts + timewarp.ts: MotionBuilder-style control rig, baked AFTER
+                          cleaning/proportions/spine. Modifiers = whole-clip slider corrections (hips height with
+                          feet re-solved onto their original targets, knees/elbows in-out via rigid rotation of the
+                          two-bone limb about its end-to-end axis — swings ONLY the mid joint, closed form, no IK —
+                          stance width, MIRROR (swap L/R tracks keeping each side's own binds + reflect quats
+                          (x,−y,−z,w) + negate hips x; face untouched), and REACH (per-limb pull of hand/foot back
+                          toward the UNCLEANED path via two-bone IK — ref clip = buildDisplay(false) cached per
+                          reclean gen, run through the same modifiers so timelines/mirroring match)). TIME WARP
+                          (timewarp.ts) = speed-ramp keys in SOURCE time, applied FIRST in the pipeline (resamples
+                          onto a uniform grid; duration changes → reclean rebuilds the transport when it drifts).
+                          RANGE SMOOTH (clean.ts smoothRange) = trim-range-only Butterworth with 0.25 s edge blends,
+                          stacked after cleanClip. reduceKeys() = greedy key reducer (drops keys the sampled curve
+                          wouldn't miss). All of warp/ranges/mods serialize into undo snapshots, the localStorage
+                          cache, and .rig.json (v2).
                           Layers = override/additive with weight, sparse pos/rot keys per effector. FK/IK cell set:
                           hips/hands/feet = IK spheres (move via convert/ik.ts solveTwoBone + rotate); spine, chest,
                           neck, head, shoulders, upper/lower arms and legs = FK octahedron cells (rotate-only — the

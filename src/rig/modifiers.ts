@@ -1,7 +1,7 @@
 import type { ConvertedClip } from "../convert/clip.ts";
 import type { Quat, Vec3 } from "../wanim/parse.ts";
 import { quatMul, quatNormalize, quatRotate } from "../convert/quat.ts";
-import { solveTwoBone, qconj, vadd, vsub, vnorm, vlen } from "../convert/ik.ts";
+import { solveTwoBone, qconj, vadd, vsub, vscale, vnorm, vlen } from "../convert/ik.ts";
 import { worldFromLocal, type FramePose } from "../convert/fk.ts";
 
 // MotionBuilder-style modifiers: whole-clip parametric corrections, applied
@@ -24,6 +24,13 @@ export interface Modifiers {
   elbowsOutDeg: number;
   /** Widen (+) or narrow (−) the stance; each foot shifts sideways. cm. */
   feetApartCm: number;
+  /** Swap left/right across the whole clip (pose + travel). Face is unaffected. */
+  mirror: boolean;
+  /**
+   * Per-limb reach: pull the hand/foot back toward its path BEFORE cleaning
+   * (0 = cleaned motion, 1 = original endpoint path), like MoBu's Reach T.
+   */
+  reach: { leftHand: number; rightHand: number; leftFoot: number; rightFoot: number };
 }
 
 export const defaultModifiers = (): Modifiers => ({
@@ -31,10 +38,15 @@ export const defaultModifiers = (): Modifiers => ({
   kneesOutDeg: 0,
   elbowsOutDeg: 0,
   feetApartCm: 0,
+  mirror: false,
+  reach: { leftHand: 0, rightHand: 0, leftFoot: 0, rightFoot: 0 },
 });
 
+export const anyReach = (m: Modifiers): boolean =>
+  !!m.reach && (m.reach.leftHand > 0 || m.reach.rightHand > 0 || m.reach.leftFoot > 0 || m.reach.rightFoot > 0);
+
 export const anyModifiers = (m: Modifiers): boolean =>
-  m.hipsHeightCm !== 0 || m.kneesOutDeg !== 0 || m.elbowsOutDeg !== 0 || m.feetApartCm !== 0;
+  m.hipsHeightCm !== 0 || m.kneesOutDeg !== 0 || m.elbowsOutDeg !== 0 || m.feetApartCm !== 0 || m.mirror;
 
 const DEG2RAD = Math.PI / 180;
 
@@ -70,6 +82,27 @@ function swingMidJoint(pose: FramePose, world: ReturnType<typeof worldFromLocal>
   pose.quat[li.end] = quatNormalize(quatMul(qconj(midR2), world.rot[li.end]));
 }
 
+/**
+ * Mirror the clip across the character's left/right axis: swap L/R bone
+ * tracks (each bone keeps its OWN bind offsets — humanoid skeletons are
+ * symmetric), reflect every rotation across the YZ plane (q → (x,−y,−z,w)),
+ * and negate the hips' world X travel. Blendshapes are left alone.
+ */
+function mirrorTracks(names: string[], localPos: Vec3[][], localQuat: Quat[][]): void {
+  const swapIdx = names.map((n, i) => {
+    const other = n.startsWith("Left") ? `Right${n.slice(4)}` : n.startsWith("Right") ? `Left${n.slice(5)}` : n;
+    const j = names.indexOf(other);
+    return j >= 0 ? j : i;
+  });
+  const srcQuat = localQuat.map((t) => t); // shallow: per-bone track refs pre-swap
+  const srcPosHips = localPos[0];
+  const mirrored: Quat[][] = names.map((_, i) =>
+    srcQuat[swapIdx[i]].map((q) => [q[0], -q[1], -q[2], q[3]] as Quat),
+  );
+  for (let b = 0; b < names.length; b++) localQuat[b] = mirrored[b];
+  localPos[0] = srcPosHips.map((p) => [-p[0], p[1], p[2]] as Vec3);
+}
+
 /** Apply the modifiers to every frame of the clip (copies; original untouched). */
 export function applyModifiers(clip: ConvertedClip, m: Modifiers): ConvertedClip {
   if (!anyModifiers(m)) return clip;
@@ -78,6 +111,8 @@ export function applyModifiers(clip: ConvertedClip, m: Modifiers): ConvertedClip
   const parents = clip.parents;
   const localPos = clip.localPos.map((t) => t.map((p) => [...p] as Vec3));
   const localQuat = clip.localQuat.map((t) => t.map((q) => [...q] as Quat));
+
+  if (m.mirror) mirrorTracks(names, localPos, localQuat);
 
   // `side` = the limb's outward lateral direction (character faces +Z, left
   // at +x). `out` = the swing sign that takes the mid joint outward about the
@@ -153,5 +188,51 @@ export function applyModifiers(clip: ConvertedClip, m: Modifiers): ConvertedClip
     }
   }
 
+  return { ...clip, localPos, localQuat, bindPos: localPos.map((t) => t[0]) };
+}
+
+/**
+ * Reach: per frame, pull each hand/foot toward where `ref` (the same clip
+ * WITHOUT cleaning) has it, blended by the limb's reach amount, then two-bone
+ * IK back onto the blended target. Ref and clip must share proportions and
+ * frame timing (both come out of the same pipeline).
+ */
+export function applyReach(clip: ConvertedClip, ref: ConvertedClip, m: Modifiers): ConvertedClip {
+  if (!anyReach(m)) return clip;
+  const frames = Math.min(clip.times.length, ref.times.length);
+  const names = clip.names;
+  const parents = clip.parents;
+  const localPos = clip.localPos.map((t) => t.map((p) => [...p] as Vec3));
+  const localQuat = clip.localQuat.map((t) => t.map((q) => [...q] as Quat));
+
+  const limbs = [
+    { r: m.reach.leftHand, li: limb(names, parents, "LeftUpperArm", "LeftLowerArm", "LeftHand"), bend: -1 },
+    { r: m.reach.rightHand, li: limb(names, parents, "RightUpperArm", "RightLowerArm", "RightHand"), bend: -1 },
+    { r: m.reach.leftFoot, li: limb(names, parents, "LeftUpperLeg", "LeftLowerLeg", "LeftFoot"), bend: 1 },
+    { r: m.reach.rightFoot, li: limb(names, parents, "RightUpperLeg", "RightLowerLeg", "RightFoot"), bend: 1 },
+  ].filter((l) => l.r > 0 && l.li);
+
+  for (let f = 0; f < frames; f++) {
+    const refWorld = worldFromLocal(parents, { pos: ref.localPos.map((t) => t[f]), quat: ref.localQuat.map((t) => t[f]) });
+    for (const { r, li, bend } of limbs) {
+      const pose: FramePose = { pos: localPos.map((t) => t[f]), quat: localQuat.map((t) => t[f]) };
+      const w = worldFromLocal(parents, pose);
+      const target = vadd(vscale(w.pos[li!.end], 1 - r), vscale(refWorld.pos[li!.end], r));
+      const res = solveTwoBone(
+        {
+          parentRot: w.rot[li!.parent],
+          rootP: w.pos[li!.root], midP: w.pos[li!.mid], endP: w.pos[li!.end],
+          rootR: w.rot[li!.root], midR: w.rot[li!.mid], endR: w.rot[li!.end],
+        },
+        target,
+        vnorm(quatRotate(w.rot[li!.root], [0, 0, bend])),
+      );
+      if (res) {
+        localQuat[li!.root][f] = res.rootLocal;
+        localQuat[li!.mid][f] = res.midLocal;
+        localQuat[li!.end][f] = res.endLocal;
+      }
+    }
+  }
   return { ...clip, localPos, localQuat, bindPos: localPos.map((t) => t[0]) };
 }

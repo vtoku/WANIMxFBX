@@ -1,16 +1,17 @@
 import "./style.css";
 import { parseWanim, BONE_COUNT, type WanimClip } from "./wanim/parse.ts";
 import { convertCharacter, resample, retargetProportions, distributeBonelessSpine, type ConvertedClip } from "./convert/clip.ts";
-import { cleanClip, type CleanOpts, type CleanStats } from "./convert/clean.ts";
+import { cleanClip, smoothRange, type CleanOpts, type CleanStats, type RangeSmooth } from "./convert/clean.ts";
 import {
   makeLayer, getTrack, setPosKey, setRotKey, deleteKeysAt, keyTimes,
   applyRigLayers, applyLayersToPose, poseAtFrame, nearestFrame,
   effectorBaseWorld, effectorDef, effectorColor, retimeKeys, keyFullPose,
-  bakeRange, dirtyRange, unionRange, fkDragRef, setKeyEase,
+  bakeRange, dirtyRange, unionRange, fkDragRef, setKeyEase, reduceKeys,
   type RigLayer, type EffectorId, type Transient, type TimeRange,
 } from "./rig/rig.ts";
 import { vsub, vadd, vlen, vnorm, qconj, quatFromTo } from "./convert/ik.ts";
-import { applyModifiers, defaultModifiers } from "./rig/modifiers.ts";
+import { applyModifiers, defaultModifiers, applyReach, anyReach } from "./rig/modifiers.ts";
+import { applyTimeWarp, type WarpKey } from "./rig/timewarp.ts";
 import { quatMul, quatDot, quatNormalize, quatToEulerZYX, eulerZYXToQuat, RAD2DEG } from "./convert/quat.ts";
 import type { CurveEase } from "./ui/curves.ts";
 import type { Vec3, Quat } from "./wanim/parse.ts";
@@ -88,6 +89,7 @@ function showCtxMenu(x: number, y: number, items: Array<{ label: string; action?
   ctxMenu.style.top = `${Math.min(y, window.innerHeight - items.length * 36 - 10)}px`;
 }
 let transport: Transport | null = null;
+let transportDuration = 0; // scale the transport was built with (warp changes it)
 let loaded: {
   name: string;
   clip: WanimClip;
@@ -213,6 +215,14 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       <input id="cutoff" type="range" min="1" max="15" step="0.5" value="7" title="Lower = smoother but mushier. Anything faster than this many shakes per second is treated as noise." />
     </label>
     <p id="cleanStats" class="clean-stats"></p>
+
+    <h4 class="group">Range smoothing</h4>
+    <p class="hint">Smooth just one rough section: set the timeline trim handles
+      around it, pick a cutoff above, then apply. Blends at the edges.</p>
+    <div class="rig-row">
+      <button id="rangeAdd" class="button ghost">Smooth trim range</button>
+    </div>
+    <div id="rangeChips" class="rig-keys"></div>
     </div>
 
     <div class="tab" id="tab-rig">
@@ -237,6 +247,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         <button id="rigNeutral" class="button ghost" title="Keys the selected handle at its unadjusted position at the playhead. Put one before and after an adjustment to keep it local.">Neutral key</button>
         <button id="rigKeyAll" class="button ghost" title="Keys every handle at the playhead, locking the whole pose at this moment so edits elsewhere can't disturb it.">Key pose</button>
         <button id="rigDelKey" class="button ghost" title="Removes the selected handle's key nearest the playhead.">Delete key</button>
+        <button id="rigReduce" class="button ghost" title="Drops keys on the selected handle that the curve wouldn't miss (within 0.5 cm / 1°).">Reduce keys</button>
       </div>
     </div>
 
@@ -260,6 +271,47 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       <span>Stance width <output id="modFeetVal">0 cm</output></span>
       <input id="modFeet" type="range" min="-20" max="20" step="1" value="0" title="Plant the feet wider (+) or narrower (−)." />
     </label>
+    <label class="field">
+      <span>Mirror left/right</span>
+      <input id="modMirror" type="checkbox" title="Swaps left and right across the whole clip — pose and travel. Face stays as recorded." />
+    </label>
+
+    <h4 class="group">Reach (pull to raw path)</h4>
+    <p class="hint">Blends each hand/foot back toward where the ORIGINAL recording
+      had it, when cleaning moved it. 0% = cleaned, 100% = raw endpoint path.</p>
+    <label class="field sub">
+      <span>L hand <output id="reachLHVal">0%</output></span>
+      <input id="reachLH" type="range" min="0" max="100" step="5" value="0" />
+    </label>
+    <label class="field sub">
+      <span>R hand <output id="reachRHVal">0%</output></span>
+      <input id="reachRH" type="range" min="0" max="100" step="5" value="0" />
+    </label>
+    <label class="field sub">
+      <span>L foot <output id="reachLFVal">0%</output></span>
+      <input id="reachLF" type="range" min="0" max="100" step="5" value="0" />
+    </label>
+    <label class="field sub">
+      <span>R foot <output id="reachRFVal">0%</output></span>
+      <input id="reachRF" type="range" min="0" max="100" step="5" value="0" />
+    </label>
+
+    <h4 class="group">Time warp</h4>
+    <p class="hint">Speed keys ramp playback speed across the clip — slow-mo a
+      section, rush another. The clip's length changes; trim resets when it does.</p>
+    <div class="rig-row">
+      <select id="warpSpeed" title="Speed at the new key">
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="0.75">0.75×</option>
+        <option value="1" selected>1×</option>
+        <option value="1.5">1.5×</option>
+        <option value="2">2×</option>
+      </select>
+      <button id="warpAdd" class="button ghost" title="Pins this speed at the playhead; speed ramps linearly between keys.">Speed key @ playhead</button>
+    </div>
+    <div id="warpChips" class="rig-keys"></div>
+
     <div class="rig-row">
       <button id="modReset" class="button ghost">Reset modifiers</button>
     </div>
@@ -398,7 +450,11 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     const opts = cleanOpts();
     const stats: CleanStats = { despiked: 0, wristClamped: 0, forearmClamped: 0, smoothedMeanDeg: 0 };
     const anyFilter = opts.despike || opts.smooth || opts.limitWrists || opts.lockWrists || opts.limitLowerArms || opts.lockLowerArmTwist || opts.fixFeet;
-    let display = withCleaning && anyFilter ? cleanClip(loaded.converted, opts, stats) : loaded.converted;
+    // Time warp first: everything downstream (cleaning, keys, trim) lives on
+    // the warped timeline. The compare view warps too, so timelines match.
+    const source = applyTimeWarp(loaded.converted, warpKeys);
+    let display = withCleaning && anyFilter ? cleanClip(source, opts, stats) : source;
+    if (withCleaning) for (const r of rangeSmooths) display = smoothRange(display, r);
     // Report what the filters actually changed — proof they're applied.
     if (withCleaning) {
       if (!anyFilter) {
@@ -431,6 +487,14 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     if (withCleaning) {
       // Modifiers, then control-rig layers on top; the compare view stays raw.
       display = applyModifiers(display, mods);
+      if (anyReach(mods)) {
+        // Reach pulls limb endpoints back toward the UNCLEANED path — build
+        // (and cache per reclean) the raw reference through the same pipeline.
+        if (!rawRefCache || rawRefCache.gen !== compareGen) {
+          rawRefCache = { gen: compareGen, clip: await buildDisplay(false) };
+        }
+        display = applyReach(display, applyModifiers(rawRefCache.clip, mods), mods);
+      }
       rigBaseClip = display;
       const baked = applyRigLayers(display, rigLayers);
       // The display MUST be a private copy: rig edits rebake into its arrays
@@ -453,6 +517,9 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   const rigLayers: RigLayer[] = []; // control-rig adjustment layers
   let rigBaseClip: ConvertedClip | null = null; // display BEFORE rig layers
   const mods = defaultModifiers(); // whole-clip parametric corrections
+  const warpKeys: WarpKey[] = []; // time-warp speed ramp (source-time keys)
+  const rangeSmooths: RangeSmooth[] = []; // user-applied range smoothing passes
+  let rawRefCache: { gen: number; clip: ConvertedClip } | null = null; // reach reference
 
   async function reclean() {
     if (!loaded || !preview) return;
@@ -460,9 +527,20 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     const gen = ++compareGen;
     const display = await buildDisplay(true);
     loaded.display = display;
-    const trim = transport?.getTrim();
-    preview.setClip(display, true); // same recording: keep camera + playback position
-    if (trim) preview.setTrim(trim.start, trim.end); // keep the user's trim
+    // A time-warp change alters the clip duration — the transport's scale is
+    // fixed at creation, so rebuild it (trim resets; keys re-attach below).
+    if (transport && Math.abs(display.duration - transportDuration) > 0.01) {
+      transport.dispose();
+      transport = createTransport(preview, display.duration);
+      timelineDock.appendChild(transport.element);
+      transportDuration = display.duration;
+      preview.setClip(display, true);
+      updateRigEditor(); // re-point key markers + dope + curves at the new bar
+    } else {
+      const trim = transport?.getTrim();
+      preview.setClip(display, true); // same recording: keep camera + playback position
+      if (trim) preview.setTrim(trim.start, trim.end); // keep the user's trim
+    }
     saveRigCache();
     // Prebuild the uncleaned version so holding Compare swaps instantly.
     void buildDisplay(false).then((b) => { if (gen === compareGen) compareBase = b; }).catch(() => {});
@@ -519,7 +597,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   const undoStack: string[] = [];
   const redoStack: string[] = [];
   const rigSnapshot = () =>
-    JSON.stringify({ layers: rigLayers, mods, counter: layerCounter, active: activeLayerIdx });
+    JSON.stringify({ layers: rigLayers, mods, counter: layerCounter, active: activeLayerIdx, warp: warpKeys, ranges: rangeSmooths });
   function updateUndoUi() {
     rigUndoBtn.disabled = !undoStack.length;
     rigRedoBtn.disabled = !redoStack.length;
@@ -538,15 +616,22 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       mods: ReturnType<typeof defaultModifiers>;
       counter: number;
       active: number;
+      warp?: WarpKey[];
+      ranges?: RangeSmooth[];
     };
-    const modsChanged = JSON.stringify(mods) !== JSON.stringify(d.mods);
+    const pipelineChanged =
+      JSON.stringify(mods) !== JSON.stringify(d.mods) ||
+      JSON.stringify(warpKeys) !== JSON.stringify(d.warp ?? []) ||
+      JSON.stringify(rangeSmooths) !== JSON.stringify(d.ranges ?? []);
     rigLayers.splice(0, rigLayers.length, ...d.layers);
-    Object.assign(mods, d.mods);
+    Object.assign(mods, defaultModifiers(), d.mods);
+    warpKeys.splice(0, warpKeys.length, ...(d.warp ?? []));
+    rangeSmooths.splice(0, rangeSmooths.length, ...(d.ranges ?? []));
     layerCounter = d.counter;
     activeLayerIdx = Math.min(d.active, rigLayers.length - 1);
-    syncModSliders();
+    syncAdjustUi();
     renderRigLayers();
-    if (modsChanged) void reclean();
+    if (pipelineChanged) void reclean();
     else rebakeRig();
   }
   function rigUndo() {
@@ -1185,14 +1270,133 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       void reclean();
     });
   }
-  (document.getElementById("modReset") as HTMLButtonElement).addEventListener("click", () => {
-    if (!modInputs.some((m) => mods[m.key] !== 0)) return;
+  // Mirror + reach + time warp + range smoothing.
+  const modMirror = document.getElementById("modMirror") as HTMLInputElement;
+  modMirror.addEventListener("change", () => {
     pushHistory();
-    for (const m of modInputs) {
-      mods[m.key] = 0;
-      m.el.value = "0";
-      m.out.value = `0${m.unit}`;
+    mods.mirror = modMirror.checked;
+    void reclean();
+  });
+
+  const reachInputs = [
+    { el: document.getElementById("reachLH") as HTMLInputElement, out: document.getElementById("reachLHVal") as HTMLOutputElement, key: "leftHand" as const },
+    { el: document.getElementById("reachRH") as HTMLInputElement, out: document.getElementById("reachRHVal") as HTMLOutputElement, key: "rightHand" as const },
+    { el: document.getElementById("reachLF") as HTMLInputElement, out: document.getElementById("reachLFVal") as HTMLOutputElement, key: "leftFoot" as const },
+    { el: document.getElementById("reachRF") as HTMLInputElement, out: document.getElementById("reachRFVal") as HTMLOutputElement, key: "rightFoot" as const },
+  ];
+  for (const r of reachInputs) {
+    r.el.addEventListener("input", () => { r.out.value = `${r.el.value}%`; });
+    r.el.addEventListener("change", () => {
+      pushHistory(); // mods still holds the old value
+      mods.reach[r.key] = Number(r.el.value) / 100;
+      void reclean();
+    });
+  }
+
+  const warpChipsEl = document.getElementById("warpChips") as HTMLDivElement;
+  const warpSpeedSel = document.getElementById("warpSpeed") as HTMLSelectElement;
+  function renderWarpChips() {
+    warpChipsEl.innerHTML = "";
+    for (const k of [...warpKeys].sort((a, b) => a.time - b.time)) {
+      const chip = document.createElement("span");
+      chip.className = "rig-key";
+      const label = document.createElement("button");
+      label.textContent = `${fmtTime(k.time)} ×${k.speed}`;
+      label.title = "Source-time speed key";
+      const del = document.createElement("button");
+      del.textContent = "×";
+      del.title = "Remove this speed key";
+      del.addEventListener("click", () => {
+        pushHistory();
+        warpKeys.splice(warpKeys.indexOf(k), 1);
+        renderWarpChips();
+        void reclean();
+      });
+      chip.append(label, del);
+      warpChipsEl.appendChild(chip);
     }
+  }
+  (document.getElementById("warpAdd") as HTMLButtonElement).addEventListener("click", () => {
+    if (!preview || !loaded) return;
+    pushHistory();
+    // Warp keys are in SOURCE time; map the current (warped) playhead back.
+    // Approximation: use the playhead fraction of the current duration.
+    const frac = transportDuration > 0 ? preview.getTime() / transportDuration : 0;
+    const srcT = frac * loaded.converted.duration;
+    const speed = Number(warpSpeedSel.value);
+    const near = warpKeys.find((k) => Math.abs(k.time - srcT) < 0.25);
+    if (near) near.speed = speed;
+    else warpKeys.push({ time: srcT, speed });
+    renderWarpChips();
+    void reclean();
+  });
+
+  const rangeChipsEl = document.getElementById("rangeChips") as HTMLDivElement;
+  function renderRangeChips() {
+    rangeChipsEl.innerHTML = "";
+    for (const r of rangeSmooths) {
+      const chip = document.createElement("span");
+      chip.className = "rig-key";
+      const label = document.createElement("button");
+      label.textContent = `${fmtTime(r.t0)}–${fmtTime(r.t1)} @ ${r.cutoffHz} Hz`;
+      const del = document.createElement("button");
+      del.textContent = "×";
+      del.title = "Remove this smoothing pass";
+      del.addEventListener("click", () => {
+        pushHistory();
+        rangeSmooths.splice(rangeSmooths.indexOf(r), 1);
+        renderRangeChips();
+        void reclean();
+      });
+      chip.append(label, del);
+      rangeChipsEl.appendChild(chip);
+    }
+  }
+  (document.getElementById("rangeAdd") as HTMLButtonElement).addEventListener("click", () => {
+    const trim = transport?.getTrim();
+    if (!trim || !loaded) return;
+    if (trim.end - trim.start > loaded.display.duration - 0.05) {
+      showError("Set the timeline trim handles around the section first — this smooths only that range.");
+      return;
+    }
+    pushHistory();
+    rangeSmooths.push({ t0: trim.start, t1: trim.end, cutoffHz: Number(cutoff.value) });
+    renderRangeChips();
+    void reclean();
+  });
+
+  (document.getElementById("rigReduce") as HTMLButtonElement).addEventListener("click", () => {
+    const layer = rigLayers[activeLayerIdx];
+    const tr = layer && selectedEffector ? getTrack(layer, selectedEffector) : null;
+    if (!tr || !layer) return;
+    pushHistory();
+    const n = reduceKeys(tr);
+    rigSelEl.textContent = `Reduced: ${n} key${n === 1 ? "" : "s"} removed.`;
+    rebakeRig();
+    if (n) setTimeout(() => updateRigEditor(), 600);
+    else updateRigEditor();
+  });
+
+  /** Sync every adjustment control from state (cache restore / undo). */
+  function syncAdjustUi() {
+    syncModSliders();
+    modMirror.checked = mods.mirror;
+    for (const r of reachInputs) {
+      r.el.value = String(Math.round(mods.reach[r.key] * 100));
+      r.out.value = `${r.el.value}%`;
+    }
+    renderWarpChips();
+    renderRangeChips();
+  }
+
+  (document.getElementById("modReset") as HTMLButtonElement).addEventListener("click", () => {
+    const dirty = modInputs.some((m) => mods[m.key] !== 0) || mods.mirror || anyReach(mods) || warpKeys.length || rangeSmooths.length;
+    if (!dirty) return;
+    pushHistory();
+    Object.assign(mods, defaultModifiers());
+    warpKeys.length = 0;
+    rangeSmooths.length = 0;
+    syncAdjustUi();
     void reclean();
   });
 
@@ -1256,8 +1460,16 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
 
   function saveRigCache() {
     try {
-      if (rigLayers.length || modInputs.some((m) => mods[m.key] !== 0)) {
-        localStorage.setItem(rigCacheKey, JSON.stringify({ v: 1, layers: rigLayers, mods, counter: layerCounter }));
+      const dirty =
+        rigLayers.length ||
+        warpKeys.length ||
+        rangeSmooths.length ||
+        JSON.stringify(mods) !== JSON.stringify(defaultModifiers());
+      if (dirty) {
+        localStorage.setItem(
+          rigCacheKey,
+          JSON.stringify({ v: 2, layers: rigLayers, mods, counter: layerCounter, warp: warpKeys, ranges: rangeSmooths }),
+        );
       } else {
         localStorage.removeItem(rigCacheKey);
       }
@@ -1265,7 +1477,13 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   }
 
   /** Replace the rig state wholesale (cache restore / file load). */
-  function adoptRigState(d: { layers?: RigLayer[]; mods?: Partial<ReturnType<typeof defaultModifiers>>; counter?: number }) {
+  function adoptRigState(d: {
+    layers?: RigLayer[];
+    mods?: Partial<ReturnType<typeof defaultModifiers>>;
+    counter?: number;
+    warp?: WarpKey[];
+    ranges?: RangeSmooth[];
+  }) {
     rigLayers.splice(0, rigLayers.length, ...(Array.isArray(d.layers) ? d.layers : []));
     for (const layer of rigLayers) {
       // Older saves may predate newer layer fields.
@@ -1273,18 +1491,31 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       layer.fadeS ??= 0.5;
     }
     Object.assign(mods, defaultModifiers(), d.mods ?? {});
+    warpKeys.splice(0, warpKeys.length, ...(d.warp ?? []));
+    rangeSmooths.splice(0, rangeSmooths.length, ...(d.ranges ?? []));
     layerCounter = d.counter ?? rigLayers.length;
     activeLayerIdx = rigLayers.length - 1;
     pickedKeys = [];
-    syncModSliders();
+    syncAdjustUi();
     renderRigLayers();
   }
 
   try {
     const saved = localStorage.getItem(rigCacheKey);
     if (saved) {
-      const d = JSON.parse(saved) as { layers?: RigLayer[]; mods?: ReturnType<typeof defaultModifiers>; counter?: number };
-      if (d.layers?.length || (d.mods && Object.values(d.mods).some((v) => v))) {
+      const d = JSON.parse(saved) as {
+        layers?: RigLayer[];
+        mods?: ReturnType<typeof defaultModifiers>;
+        counter?: number;
+        warp?: WarpKey[];
+        ranges?: RangeSmooth[];
+      };
+      if (
+        d.layers?.length ||
+        d.warp?.length ||
+        d.ranges?.length ||
+        (d.mods && JSON.stringify({ ...defaultModifiers(), ...d.mods }) !== JSON.stringify(defaultModifiers()))
+      ) {
         adoptRigState(d);
         rigCacheNote.textContent = "Restored saved edits for this recording.";
       }
@@ -1293,7 +1524,11 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
 
   (document.getElementById("rigSave") as HTMLButtonElement).addEventListener("click", () => {
     if (!loaded) return;
-    const json = JSON.stringify({ v: 1, layers: rigLayers, mods, counter: layerCounter }, null, 1);
+    const json = JSON.stringify(
+      { v: 2, layers: rigLayers, mods, counter: layerCounter, warp: warpKeys, ranges: rangeSmooths },
+      null,
+      1,
+    );
     downloadBytes(`${sanitizeFilename(loaded.name)}.rig.json`, new TextEncoder().encode(json));
   });
   const rigFile = document.getElementById("rigFile") as HTMLInputElement;
@@ -1332,12 +1567,19 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         // Uses the RECORDED proportions (the body-mesh retarget is a mesh-fit
         // concern with no meaning in a .wanim) plus the cleaning + spine
         // changes; hips keep full motion and the character root stays identity.
-        let clip = cleanClip(loaded.converted, cleanOpts());
+        const warpedSrc = applyTimeWarp(loaded.converted, warpKeys);
+        let clip = cleanClip(warpedSrc, cleanOpts());
+        for (const r of rangeSmooths) clip = smoothRange(clip, r);
         if (distSpineChk.checked) clip = distributeBonelessSpine(clip, Number(distSpineAmt.value) / 100);
         // Modifiers + rig layers bake here too. Additive deltas transfer
         // cleanly; override targets were authored on the display proportions,
         // so on the recorded skeleton they land approximately.
         clip = applyModifiers(clip, mods);
+        if (anyReach(mods)) {
+          let raw = warpedSrc;
+          if (distSpineChk.checked) raw = distributeBonelessSpine(raw, Number(distSpineAmt.value) / 100);
+          clip = applyReach(clip, applyModifiers(raw, mods), mods);
+        }
         clip = applyRigLayers(clip, rigLayers);
         const rs = resample(clip, fps, trim.start, trim.end);
         const { writeWanim } = await import("./wanim/writeWanim.ts");
@@ -1422,6 +1664,7 @@ async function handleFile(file: File) {
 
     transport?.dispose();
     transport = createTransport(preview, converted.duration);
+    transportDuration = converted.duration;
     timelineDock.appendChild(transport.element);
 
     buildPanel(file.name, clip, converted);

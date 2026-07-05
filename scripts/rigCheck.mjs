@@ -351,5 +351,74 @@ const f0 = 0;
   }
 }
 
+// --- 9. modifier batch: mirror / reach / reduce / warp / range smooth ----------
+{
+  const { applyModifiers, defaultModifiers, applyReach } = await import("../src/rig/modifiers.ts");
+  const { applyTimeWarp } = await import("../src/rig/timewarp.ts");
+  const { reduceKeys } = await import("../src/rig/rig.ts");
+  const { cleanClip, smoothRange } = await import("../src/convert/clean.ts");
+
+  // Mirror: left hand lands where the right hand was, x-negated; hips travel flips.
+  {
+    const mir = applyModifiers(c, { ...defaultModifiers(), mirror: true });
+    const w0 = world(c, fKey), w1 = world(mir, fKey);
+    const lh = boneI("LeftHand"), rh = boneI("RightHand"), hips = boneI("Hips");
+    const target = [-w0.pos[rh][0], w0.pos[rh][1], w0.pos[rh][2]];
+    const err = dist(w1.pos[lh], target);
+    const hipsX = Math.abs(w1.pos[hips][0] + w0.pos[hips][0]);
+    check("mirror: L hand = x-mirrored R hand, hips x flipped",
+      err < 0.05 && hipsX < 1e-6, `hand err ${mm(err)}mm (avatar asymmetry), hips ${mm(hipsX)}mm`);
+  }
+
+  // Reach: pull the smoothed hand fully back onto the raw path.
+  {
+    const smoothed = cleanClip(c, { smooth: true, cutoffHz: 1 });
+    const rh = boneI("RightHand");
+    const before = dist(world(smoothed, fKey).pos[rh], world(c, fKey).pos[rh]);
+    const reached = applyReach(smoothed, c, { ...defaultModifiers(), reach: { leftHand: 0, rightHand: 1, leftFoot: 0, rightFoot: 0 } });
+    const after = dist(world(reached, fKey).pos[rh], world(c, fKey).pos[rh]);
+    const lhDrift = dist(world(reached, fKey).pos[boneI("LeftHand")], world(smoothed, fKey).pos[boneI("LeftHand")]);
+    check("reach 100%: hand returns to the raw path, other limbs untouched",
+      before > 0.003 && after < before * 0.1 && lhDrift < 1e-9,
+      `off-path ${mm(before)}→${mm(after)}mm, left hand drift ${mm(lhDrift)}mm`);
+  }
+
+  // Key reducer: linear ramp collapses to its endpoints; a corner survives.
+  {
+    const layer = makeLayer("L1");
+    const tr = getTrack(layer, "hips", true);
+    for (let i = 0; i <= 8; i++) setPosKey(tr, i, [0, i * 0.01, 0]); // straight ramp
+    setPosKey(tr, 10, [0, 0, 0]); // corner back down
+    const removed = reduceKeys(tr, 0.001);
+    check("key reducer: straight ramp collapses, corner survives",
+      removed >= 7 && tr.posKeys.length <= 4 && tr.posKeys.some((k) => Math.abs(k.time - 8) < 0.01),
+      `removed ${removed}, ${tr.posKeys.length} left`);
+  }
+
+  // Time warp: half speed everywhere doubles the duration; content maps 1s→2s.
+  {
+    const warped = applyTimeWarp(c, [{ time: 0, speed: 0.5 }]);
+    const ratio = warped.duration / c.duration;
+    const rh = boneI("RightHand");
+    const fOut = nearestFrame(warped, 10);
+    const fSrc = nearestFrame(c, 5);
+    const err = dist(world(warped, fOut).pos[rh], world(c, fSrc).pos[rh]);
+    check("time warp: 0.5x doubles duration, out@10s == src@5s",
+      Math.abs(ratio - 2) < 0.02 && err < 0.01, `ratio ${ratio.toFixed(3)}, pose err ${mm(err)}mm`);
+  }
+
+  // Range smooth: inside improves, outside byte-identical.
+  {
+    const sm = smoothRange(c, { t0: 20, t1: 30, cutoffHz: 2 });
+    const rh = boneI("RightHand");
+    const fIn = nearestFrame(c, 25);
+    const fOut = nearestFrame(c, 50);
+    const movedIn = dist(world(sm, fIn).pos[rh], world(c, fIn).pos[rh]);
+    const movedOut = dist(world(sm, fOut).pos[rh], world(c, fOut).pos[rh]);
+    check("range smooth: changes inside the range only",
+      movedIn > 0.002 && movedOut < 1e-12, `inside ${mm(movedIn)}mm, outside ${mm(movedOut)}mm`);
+  }
+}
+
 if (failures) { console.error(`${failures} FAILURES`); process.exit(1); }
 console.log("OK");

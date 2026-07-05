@@ -234,6 +234,53 @@ function sampleRot(keys: RotKey[], t: number): Quat | null {
 export const sampleTrackPos = samplePos;
 export const sampleTrackRot = sampleRot;
 
+/**
+ * Remove keys whose absence the sampled curve wouldn't notice (within
+ * posTol meters / rotTol radians). Greedy sweep until stable; first and
+ * last keys always survive. Returns how many keys were dropped.
+ */
+export function reduceKeys(track: RigTrack, posTol = 0.005, rotTol = 1 * Math.PI / 180): number {
+  let removed = 0;
+  const sweep = <K extends { time: number }>(
+    keys: K[],
+    err: (removedKey: K, rest: K[]) => number,
+    tol: number,
+  ): K[] => {
+    let out = keys;
+    for (let changed = true; changed && out.length > 2; ) {
+      changed = false;
+      for (let i = 1; i < out.length - 1; i++) {
+        const rest = out.filter((_, j) => j !== i);
+        if (err(out[i], rest) < tol) {
+          out = rest;
+          removed++;
+          changed = true;
+          break;
+        }
+      }
+    }
+    return out;
+  };
+  track.posKeys = sweep(
+    track.posKeys,
+    (k, rest) => {
+      const v = samplePos(rest, k.time)!;
+      return Math.hypot(v[0] - k.v[0], v[1] - k.v[1], v[2] - k.v[2]);
+    },
+    posTol,
+  );
+  track.rotKeys = sweep(
+    track.rotKeys,
+    (k, rest) => {
+      const q = sampleRot(rest, k.time)!;
+      const d = Math.abs(q[0] * k.q[0] + q[1] * k.q[1] + q[2] * k.q[2] + q[3] * k.q[3]);
+      return 2 * Math.acos(Math.min(1, d));
+    },
+    rotTol,
+  );
+  return removed;
+}
+
 /** Set the ease of the pos+rot keys at `time`. */
 export function setKeyEase(track: RigTrack, time: number, ease: KeyEase): void {
   for (const k of track.posKeys) if (Math.abs(k.time - time) < KEY_EPS) k.ease = ease;

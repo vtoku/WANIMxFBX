@@ -216,6 +216,65 @@ function limitLowerArms(c: ConvertedClip, localQuat: Quat[][], twistMax: number,
   return clamped;
 }
 
+/** A user-applied smoothing pass over one time range. */
+export interface RangeSmooth { t0: number; t1: number; cutoffHz: number; }
+
+/**
+ * Butterworth-smooth ONLY the frames inside [t0, t1], blending back into the
+ * untouched motion over 0.25 s at each edge so there's no seam. Same zero-lag
+ * filtfilt as the whole-clip smoother.
+ */
+export function smoothRange(c: ConvertedClip, r: RangeSmooth): ConvertedClip {
+  const frames = c.times.length;
+  const f0 = c.times.findIndex((t) => t >= r.t0 - 0.35);
+  let f1 = frames - 1;
+  while (f1 > 0 && c.times[f1] > r.t1 + 0.35) f1--;
+  if (f0 < 0 || f1 - f0 < 8) return c;
+
+  const localQuat = c.localQuat.map((t) => t.map((q) => [...q] as Quat));
+  const localPos = c.localPos.map((t) => t.map((p) => [...p] as Vec3));
+  const n = f1 - f0 + 1;
+  const fs = (n - 1) / Math.max(1e-6, c.times[f1] - c.times[f0]);
+  const fc = Math.max(0.5, Math.min(r.cutoffHz, fs / 2 - 0.1));
+  const q = butterworthLowpass(fc, fs);
+  const BLEND = 0.25;
+  const weight = (t: number): number => {
+    const inL = Math.min(1, Math.max(0, (t - r.t0) / BLEND + 1));
+    const inR = Math.min(1, Math.max(0, (r.t1 - t) / BLEND + 1));
+    const w = Math.min(inL, inR);
+    return w * w * (3 - 2 * w);
+  };
+
+  for (const track of localQuat) {
+    let valid = true;
+    for (let f = f0; f <= f1; f++) {
+      if (Math.hypot(track[f][0], track[f][1], track[f][2], track[f][3]) < 0.5) { valid = false; break; }
+    }
+    if (!valid) continue;
+    for (let comp = 0; comp < 4; comp++) {
+      const x = new Array<number>(n);
+      for (let i = 0; i < n; i++) x[i] = track[f0 + i][comp];
+      const y = filtfilt(x, q);
+      for (let i = 0; i < n; i++) {
+        const w = weight(c.times[f0 + i]);
+        track[f0 + i][comp] = x[i] + (y[i] - x[i]) * w;
+      }
+    }
+    for (let f = f0; f <= f1; f++) track[f] = quatNormalize(track[f]);
+  }
+  const hips = localPos[0];
+  for (let comp = 0; comp < 3; comp++) {
+    const x = new Array<number>(n);
+    for (let i = 0; i < n; i++) x[i] = hips[f0 + i][comp];
+    const y = filtfilt(x, q);
+    for (let i = 0; i < n; i++) {
+      const w = weight(c.times[f0 + i]);
+      hips[f0 + i][comp] = x[i] + (y[i] - x[i]) * w;
+    }
+  }
+  return { ...c, localQuat, localPos, bindPos: localPos.map((t) => t[0]) };
+}
+
 export function cleanClip(c: ConvertedClip, opts: CleanOpts, stats?: CleanStats): ConvertedClip {
   const frames = c.times.length;
   if (frames < 5) return c;
