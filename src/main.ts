@@ -1797,9 +1797,9 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
 
   const formatSel = document.getElementById("format") as HTMLSelectElement;
   const outNameEl = document.getElementById("outName") as HTMLInputElement;
-  outNameEl.value = `${sanitizeFilename(name)}-clean`;
+  outNameEl.value = `${sanitizeFilename(name)}_cleaned`;
   /** Export base name — the user names the output so "which one is cleaned" stays obvious. */
-  const outBase = () => sanitizeFilename(outNameEl.value.trim()) || `${sanitizeFilename(loaded?.name ?? "export")}-clean`;
+  const outBase = () => sanitizeFilename(outNameEl.value.trim()) || `${sanitizeFilename(loaded?.name ?? "export")}_cleaned`;
   downloadBtn.addEventListener("click", async () => {
     if (!loaded) return;
     const format = formatSel.value;
