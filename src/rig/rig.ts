@@ -1,7 +1,7 @@
 import type { ConvertedClip } from "../convert/clip.ts";
 import type { Quat, Vec3 } from "../wanim/parse.ts";
 import { quatMul, quatNormalize, quatSlerp, quatRotate } from "../convert/quat.ts";
-import { solveTwoBone, qconj, vadd, vscale, vlerp, vnorm } from "../convert/ik.ts";
+import { solveTwoBone, qconj, vadd, vsub, vscale, vlerp, vlen, vnorm } from "../convert/ik.ts";
 import { worldFromLocal, type FramePose } from "../convert/fk.ts";
 
 // A minimal MotionBuilder-style control rig: adjustment layers over the
@@ -30,6 +30,12 @@ export interface EffectorDef {
   bone: string;
   /** Two-bone chain (root/mid) when the effector is IK-driven. */
   chain?: { root: string; mid: string };
+  /**
+   * FK bones: where the bone "points" (first existing child in the list) —
+   * translate-dragging the handle swings this tip toward the drag, Poser
+   * style, so pulling the chest forward LEANS it forward.
+   */
+  tip?: string[];
   canMove: boolean;
   canRotate: boolean;
 }
@@ -46,20 +52,49 @@ export const EFFECTORS: EffectorDef[] = [
   { id: "leftFoot", label: "Left foot", bone: "LeftFoot", chain: { root: "LeftUpperLeg", mid: "LeftLowerLeg" }, canMove: true, canRotate: true },
   { id: "rightFoot", label: "Right foot", bone: "RightFoot", chain: { root: "RightUpperLeg", mid: "RightLowerLeg" }, canMove: true, canRotate: true },
   { id: "head", label: "Head", bone: "Head", canMove: false, canRotate: true },
-  { id: "spine", label: "Spine", bone: "Spine", canMove: false, canRotate: true },
-  { id: "chest", label: "Chest", bone: "Chest", canMove: false, canRotate: true },
-  { id: "neck", label: "Neck", bone: "Neck", canMove: false, canRotate: true },
-  { id: "leftShoulder", label: "Left shoulder", bone: "LeftShoulder", canMove: false, canRotate: true },
-  { id: "rightShoulder", label: "Right shoulder", bone: "RightShoulder", canMove: false, canRotate: true },
-  { id: "leftUpperArm", label: "Left upper arm", bone: "LeftUpperArm", canMove: false, canRotate: true },
-  { id: "rightUpperArm", label: "Right upper arm", bone: "RightUpperArm", canMove: false, canRotate: true },
-  { id: "leftLowerArm", label: "Left forearm", bone: "LeftLowerArm", canMove: false, canRotate: true },
-  { id: "rightLowerArm", label: "Right forearm", bone: "RightLowerArm", canMove: false, canRotate: true },
-  { id: "leftUpperLeg", label: "Left thigh", bone: "LeftUpperLeg", canMove: false, canRotate: true },
-  { id: "rightUpperLeg", label: "Right thigh", bone: "RightUpperLeg", canMove: false, canRotate: true },
-  { id: "leftLowerLeg", label: "Left shin", bone: "LeftLowerLeg", canMove: false, canRotate: true },
-  { id: "rightLowerLeg", label: "Right shin", bone: "RightLowerLeg", canMove: false, canRotate: true },
+  { id: "spine", label: "Spine", bone: "Spine", tip: ["Chest", "UpperChest", "Neck"], canMove: false, canRotate: true },
+  { id: "chest", label: "Chest", bone: "Chest", tip: ["UpperChest", "Neck"], canMove: false, canRotate: true },
+  { id: "neck", label: "Neck", bone: "Neck", tip: ["Head"], canMove: false, canRotate: true },
+  { id: "leftShoulder", label: "Left shoulder", bone: "LeftShoulder", tip: ["LeftUpperArm"], canMove: false, canRotate: true },
+  { id: "rightShoulder", label: "Right shoulder", bone: "RightShoulder", tip: ["RightUpperArm"], canMove: false, canRotate: true },
+  { id: "leftUpperArm", label: "Left upper arm", bone: "LeftUpperArm", tip: ["LeftLowerArm"], canMove: false, canRotate: true },
+  { id: "rightUpperArm", label: "Right upper arm", bone: "RightUpperArm", tip: ["RightLowerArm"], canMove: false, canRotate: true },
+  { id: "leftLowerArm", label: "Left forearm", bone: "LeftLowerArm", tip: ["LeftHand"], canMove: false, canRotate: true },
+  { id: "rightLowerArm", label: "Right forearm", bone: "RightLowerArm", tip: ["RightHand"], canMove: false, canRotate: true },
+  { id: "leftUpperLeg", label: "Left thigh", bone: "LeftUpperLeg", tip: ["LeftLowerLeg"], canMove: false, canRotate: true },
+  { id: "rightUpperLeg", label: "Right thigh", bone: "RightUpperLeg", tip: ["RightLowerLeg"], canMove: false, canRotate: true },
+  { id: "leftLowerLeg", label: "Left shin", bone: "LeftLowerLeg", tip: ["LeftFoot"], canMove: false, canRotate: true },
+  { id: "rightLowerLeg", label: "Right shin", bone: "RightLowerLeg", tip: ["RightFoot"], canMove: false, canRotate: true },
 ];
+
+/**
+ * Joint position + tip direction of an FK bone through the FULL layer stack
+ * at frame f — the reference a Poser-style translate-drag swings around.
+ * The head has no child, so its tip is straight "up" in head space.
+ */
+export function fkDragRef(
+  clip: ConvertedClip,
+  layers: RigLayer[],
+  effector: EffectorId,
+  f: number,
+): { joint: Vec3; tip: Vec3 } | null {
+  const def = effectorDef(effector);
+  const bone = clip.names.indexOf(def.bone);
+  if (bone < 0) return null;
+  const pose = poseAtFrame(clip, f);
+  applyLayersToPose(pose, clip.names, clip.parents, layers, clip.times[f]);
+  const world = worldFromLocal(clip.parents, pose);
+  const joint = world.pos[bone];
+  if (def.tip) {
+    for (const t of def.tip) {
+      const ti = clip.names.indexOf(t);
+      // A "filled" missing bone (e.g. UpperChest) sits on top of its parent —
+      // useless as a direction; fall through to the next candidate.
+      if (ti >= 0 && vlen(vsub(world.pos[ti], joint)) > 0.02) return { joint, tip: world.pos[ti] };
+    }
+  }
+  return { joint, tip: vadd(joint, quatRotate(world.rot[bone], [0, 0.18, 0])) };
+}
 
 export const effectorDef = (id: EffectorId): EffectorDef => EFFECTORS.find((e) => e.id === id)!;
 

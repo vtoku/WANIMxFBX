@@ -6,12 +6,12 @@ import {
   makeLayer, getTrack, setPosKey, setRotKey, deleteKeysAt, keyTimes,
   applyRigLayers, applyLayersToPose, poseAtFrame, nearestFrame,
   effectorBaseWorld, effectorDef, effectorColor, retimeKeys, keyFullPose,
-  bakeRange, dirtyRange, unionRange,
+  bakeRange, dirtyRange, unionRange, fkDragRef,
   type RigLayer, type EffectorId, type Transient, type TimeRange,
 } from "./rig/rig.ts";
-import { vsub, qconj } from "./convert/ik.ts";
+import { vsub, vadd, vlen, vnorm, qconj, quatFromTo } from "./convert/ik.ts";
 import { applyModifiers, defaultModifiers } from "./rig/modifiers.ts";
-import { quatMul } from "./convert/quat.ts";
+import { quatMul, quatDot, quatNormalize } from "./convert/quat.ts";
 import type { Vec3, Quat } from "./wanim/parse.ts";
 import { writeAnimationFbx, type SkinnedMeshExport } from "./fbx/animationFbx.ts";
 import { remapNames, type NameScheme } from "./convert/skeleton.ts";
@@ -33,7 +33,15 @@ const panel = document.getElementById("panel") as HTMLElement;
 
 let preview: PreviewScene | null = null;
 /** Current panel's rig actions, driven by the module-level hotkey listener. */
-let rigHotkeys: { undo(): void; redo(): void; copy(): void; paste(): void; del(): void } | null = null;
+let rigHotkeys: {
+  undo(): void;
+  redo(): void;
+  copy(): void;
+  paste(): void;
+  del(): void;
+  mode(m: "translate" | "rotate"): void;
+  toggleSpace(): void;
+} | null = null;
 document.addEventListener("keydown", (e) => {
   if (!rigHotkeys) return;
   const tgt = e.target as HTMLElement | null;
@@ -44,8 +52,13 @@ document.addEventListener("keydown", (e) => {
     else if (k === "y" || (k === "z" && e.shiftKey)) { e.preventDefault(); rigHotkeys.redo(); }
     else if (k === "c" && !inField) rigHotkeys.copy();
     else if (k === "v" && !inField) rigHotkeys.paste();
-  } else if (e.key === "Delete" && !inField) {
-    rigHotkeys.del();
+  } else if (!inField) {
+    // Standard DCC manipulation keys: Q space, W move, E rotate.
+    const k = e.key.toLowerCase();
+    if (e.key === "Delete") rigHotkeys.del();
+    else if (k === "w") rigHotkeys.mode("translate");
+    else if (k === "e") rigHotkeys.mode("rotate");
+    else if (k === "q") rigHotkeys.toggleSpace();
   }
 });
 
@@ -183,10 +196,11 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     <div id="rigLayers" class="rig-layers"></div>
     <div class="rig-row">
       <button id="rigAdd" class="button ghost">Add layer</button>
-      <select id="rigGizmo" title="What the viewport gizmo edits. FK bones only rotate, so this switches automatically when you pick one.">
+      <select id="rigGizmo" title="Gizmo mode (W = move, E = rotate). Pulling an FK diamond in move mode swings the bone toward the drag.">
         <option value="translate" selected>Move</option>
         <option value="rotate">Rotate</option>
       </select>
+      <button id="rigSpace" class="button ghost" title="Gizmo axes: Local follows the bone, World uses the scene axes (Q toggles).">Local</button>
     </div>
     <div class="rig-row">
       <button id="rigUndo" class="button ghost" disabled title="Undo the last rig or modifier edit (Ctrl+Z)">Undo</button>
@@ -575,7 +589,18 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     updateRigEditor();
   }
 
-  rigHotkeys = { undo: rigUndo, redo: rigRedo, copy: copyPicked, paste: pastePicked, del: deletePicked };
+  rigHotkeys = {
+    undo: rigUndo,
+    redo: rigRedo,
+    copy: copyPicked,
+    paste: pastePicked,
+    del: deletePicked,
+    mode: (m) => {
+      rigGizmoSel.value = m;
+      preview?.setGizmoMode(m);
+    },
+    toggleSpace: () => setGizmoSpaceUi(preview?.getGizmoSpace() === "local" ? "world" : "local"),
+  };
 
   /**
    * Rebake layers onto the (unchanged) base, IN PLACE in the display clip the
@@ -840,6 +865,16 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     preview?.setGizmoMode(rigGizmoSel.value as "translate" | "rotate");
   });
 
+  const rigSpaceBtn = document.getElementById("rigSpace") as HTMLButtonElement;
+  function setGizmoSpaceUi(s: "local" | "world") {
+    preview?.setGizmoSpace(s);
+    rigSpaceBtn.textContent = s === "local" ? "Local" : "World";
+  }
+  rigSpaceBtn.addEventListener("click", () => {
+    setGizmoSpaceUi(preview?.getGizmoSpace() === "local" ? "world" : "local");
+  });
+  setGizmoSpaceUi("local"); // bone-aligned rings by default — world axes rarely match a limb
+
   rigNeutralBtn.addEventListener("click", () => {
     const layer = rigLayers[activeLayerIdx];
     if (!layer || !selectedEffector || !rigBaseClip || !preview) return;
@@ -888,14 +923,17 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   });
 
   // Viewport drag → live single-frame solve → key on release.
-  let dragCtx: { f: number; t: number; base: { pos: Vec3; rot: Quat }; transient: Transient } | null = null;
+  let dragCtx: {
+    f: number;
+    t: number;
+    base: { pos: Vec3; rot: Quat };
+    start: { pos: Vec3; rot: Quat };
+    fkRef: { joint: Vec3; tip: Vec3 } | null;
+    transient: Transient;
+  } | null = null;
   preview?.setRigCallbacks({
     onSelect: (e) => {
       selectedEffector = e;
-      if (e && !effectorDef(e).canMove && rigGizmoSel.value === "translate") {
-        rigGizmoSel.value = "rotate"; // head only rotates
-        preview?.setGizmoMode("rotate");
-      }
       updateRigEditor();
     },
     onDragStart: (e) => {
@@ -906,7 +944,11 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       const t = preview!.getTime();
       const f = nearestFrame(rigBaseClip, t);
       const base = effectorBaseWorld(rigBaseClip, rigLayers, activeLayerIdx, e, f);
-      dragCtx = { f, t, base, transient: { layerIndex: activeLayerIdx, effector: e } };
+      const start = preview!.getEffectorWorld(e) ?? base;
+      // FK bones swing about their joint when PULLED (Poser style): pulling
+      // the chest forward leans it forward.
+      const fkRef = effectorDef(e).canMove ? null : fkDragRef(rigBaseClip, rigLayers, e, f);
+      dragCtx = { f, t, base, start, fkRef, transient: { layerIndex: activeLayerIdx, effector: e } };
       return true;
     },
     onDragMove: (pos, rot) => {
@@ -914,9 +956,20 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       const layer = rigLayers[activeLayerIdx];
       if (!layer) return; // deleted mid-drag; onDragEnd cleans up
       const def = effectorDef(dragCtx.transient.effector);
-      if (rigGizmoSel.value === "translate" && def.canMove) {
+      // Route by what the input actually changed — the gizmo moves either
+      // position (translate / direct grab) or rotation (rotate rings).
+      const posMoved = vlen(vsub(pos, dragCtx.start.pos)) > 1e-5;
+      const rotMoved = 1 - Math.abs(quatDot(rot, dragCtx.start.rot)) > 1e-9;
+      if (posMoved && def.canMove) {
         dragCtx.transient.pos = layer.mode === "additive" ? vsub(pos, dragCtx.base.pos) : pos;
-      } else if (def.canRotate) {
+      } else if (posMoved && dragCtx.fkRef) {
+        // Swing the bone so its tip chases the drag.
+        const drag = vsub(pos, dragCtx.start.pos);
+        const dir0 = vnorm(vsub(dragCtx.fkRef.tip, dragCtx.fkRef.joint));
+        const dir1 = vnorm(vsub(vadd(dragCtx.fkRef.tip, drag), dragCtx.fkRef.joint));
+        const swing = quatFromTo(dir0, dir1);
+        dragCtx.transient.rot = layer.mode === "additive" ? swing : quatNormalize(quatMul(swing, dragCtx.base.rot));
+      } else if (rotMoved && def.canRotate) {
         dragCtx.transient.rot = layer.mode === "additive" ? quatMul(rot, qconj(dragCtx.base.rot)) : rot;
       }
       const pose = poseAtFrame(rigBaseClip, dragCtx.f);

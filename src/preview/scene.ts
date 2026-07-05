@@ -69,13 +69,24 @@ export class PreviewScene {
   private rigEnabled = false;
   private rigHandles = new Map<EffectorId, THREE.Mesh>();
   private rigSelected: EffectorId | null = null;
+  private rigHovered: EffectorId | null = null;
   private gizmo: TransformControls | null = null;
+  private gizmoSpace: "local" | "world" = "local";
   private gizmoProxy = new THREE.Object3D();
   private gizmoDragging = false;
   private rigCbs: RigCallbacks | null = null;
   private poseOverride: FramePose | null = null;
   private raycaster = new THREE.Raycaster();
   private pointerNdc = new THREE.Vector2();
+  /** Poser-style direct drag: grab the handle itself, move in the view plane. */
+  private directDrag: {
+    effector: EffectorId;
+    plane: THREE.Plane;
+    startRot: Quat;
+    startX: number;
+    startY: number;
+    active: boolean;
+  } | null = null;
 
   private ro: ResizeObserver;
   private rafId = 0;
@@ -106,14 +117,47 @@ export class PreviewScene {
     // the click selects/drags instead of tumbling the camera.
     this.renderer.domElement.addEventListener("pointermove", (ev) => {
       if (this.gizmoDragging) return;
+      if (this.directDrag) { this.moveDirectDrag(ev); return; }
       const hover = this.pickHandle(ev);
+      if (hover !== this.rigHovered) {
+        this.rigHovered = hover;
+        this.restyleHandles();
+      }
       const overGizmo = !!(this.gizmo && (this.gizmo as unknown as { axis: string | null }).axis);
       this.controls.enabled = !hover && !overGizmo;
     });
     this.renderer.domElement.addEventListener("pointerdown", (ev) => {
       if (ev.button !== 0 || this.gizmoDragging) return;
       const hit = this.pickHandle(ev);
-      if (hit) this.selectEffector(hit);
+      if (!hit) return;
+      // The gizmo keeps clicks on its own parts — but only for the effector
+      // it's attached to. A DIFFERENT handle under the gizmo wins, otherwise
+      // parts near the current selection are unreachable.
+      const overGizmo = !!(this.gizmo && (this.gizmo as unknown as { axis: string | null }).axis);
+      if (overGizmo && hit === this.rigSelected) return;
+      this.selectEffector(hit);
+      // Arm a direct drag: moving past a few px grabs the part itself,
+      // translating it in the camera plane (Poser style — no gizmo needed).
+      const w = this.getEffectorWorld(hit);
+      if (!w) return;
+      const n = new THREE.Vector3();
+      this.camera.getWorldDirection(n);
+      this.directDrag = {
+        effector: hit,
+        plane: new THREE.Plane().setFromNormalAndCoplanarPoint(n, new THREE.Vector3(...w.pos)),
+        startRot: w.rot,
+        startX: ev.clientX,
+        startY: ev.clientY,
+        active: false,
+      };
+      this.controls.enabled = false;
+    });
+    window.addEventListener("pointerup", () => {
+      if (!this.directDrag) return;
+      const wasActive = this.directDrag.active;
+      this.directDrag = null;
+      this.restyleHandles();
+      if (wasActive) this.rigCbs?.onDragEnd();
     });
 
     this.ro = new ResizeObserver(() => this.resize());
@@ -415,6 +459,53 @@ export class PreviewScene {
     this.gizmo?.setMode(mode);
   }
 
+  /** Gizmo axes: "local" = aligned to the bone, "world" = scene axes. */
+  setGizmoSpace(space: "local" | "world") {
+    this.gizmoSpace = space;
+    this.gizmo?.setSpace(space);
+  }
+
+  getGizmoSpace(): "local" | "world" {
+    return this.gizmoSpace;
+  }
+
+  /** Handle look for every state: idle/hover/selected, dimmed while dragging. */
+  private restyleHandles() {
+    const dragging = this.gizmoDragging || !!this.directDrag?.active;
+    for (const [id, mesh] of this.rigHandles) {
+      const mat = mesh.material as THREE.MeshBasicMaterial;
+      const movable = EFFECTORS.find((e) => e.id === id)?.canMove;
+      const sel = id === this.rigSelected;
+      const hov = id === this.rigHovered;
+      mat.opacity = dragging ? (sel ? 0.9 : 0.06) : sel ? 0.95 : hov ? 0.85 : movable ? 0.3 : 0.2;
+      mesh.scale.setScalar(sel ? 1.3 : hov ? 1.2 : 1);
+    }
+  }
+
+  private moveDirectDrag(ev: PointerEvent) {
+    const dd = this.directDrag;
+    if (!dd || !this.rigCbs) return;
+    if (!dd.active) {
+      if (Math.hypot(ev.clientX - dd.startX, ev.clientY - dd.startY) < 5) return; // still a click
+      if (!this.rigCbs.onDragStart(dd.effector)) {
+        this.directDrag = null;
+        return;
+      }
+      dd.active = true;
+      this.pause();
+      this.restyleHandles();
+    }
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.pointerNdc.set(
+      ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+      -((ev.clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(this.pointerNdc, this.camera);
+    const p = new THREE.Vector3();
+    if (!this.raycaster.ray.intersectPlane(dd.plane, p)) return;
+    this.rigCbs.onDragMove([p.x, p.y, p.z], dd.startRot);
+  }
+
   getSelectedEffector(): EffectorId | null {
     return this.rigSelected;
   }
@@ -456,11 +547,7 @@ export class PreviewScene {
   selectEffector(effector: EffectorId | null) {
     if (this.rigSelected === effector) return;
     this.rigSelected = effector;
-    for (const [id, mesh] of this.rigHandles) {
-      const movable = EFFECTORS.find((e) => e.id === id)?.canMove;
-      (mesh.material as THREE.MeshBasicMaterial).opacity = id === effector ? 1 : movable ? 0.55 : 0.4;
-      mesh.scale.setScalar(id === effector ? 1.35 : 1);
-    }
+    this.restyleHandles();
     if (effector && this.gizmo) {
       this.syncProxy();
       this.gizmo.attach(this.gizmoProxy);
@@ -476,17 +563,17 @@ export class PreviewScene {
     for (const def of EFFECTORS) {
       const bone = this.clip.names.indexOf(def.bone);
       if (bone < 0 || !this.boneNodes[bone]) continue;
-      // IK effectors (movable) are spheres; FK rotate-only cells are smaller
-      // octahedra so the main effectors stay easy to grab.
+      // IK effectors (movable) are spheres; FK cells are smaller octahedra.
+      // Small and faint so the mesh stays readable; hover brightens them.
       const geo = def.canMove
-        ? new THREE.SphereGeometry(def.id === "hips" ? 0.045 : 0.032, 16, 12)
-        : new THREE.OctahedronGeometry(0.022);
+        ? new THREE.SphereGeometry(def.id === "hips" ? 0.034 : 0.024, 16, 12)
+        : new THREE.OctahedronGeometry(0.016);
       const mesh = new THREE.Mesh(
         geo,
         new THREE.MeshBasicMaterial({
           color: effectorColor(def.id),
           transparent: true,
-          opacity: def.canMove ? 0.55 : 0.4,
+          opacity: def.canMove ? 0.3 : 0.2,
           depthTest: false,
         }),
       );
@@ -499,6 +586,7 @@ export class PreviewScene {
       this.scene.add(this.gizmoProxy);
       this.gizmo = new TransformControls(this.camera, this.renderer.domElement);
       this.gizmo.size = 0.65;
+      this.gizmo.setSpace(this.gizmoSpace);
       const helper = this.gizmo.getHelper();
       helper.renderOrder = 20;
       this.scene.add(helper);
@@ -517,6 +605,7 @@ export class PreviewScene {
           this.rigCbs?.onDragEnd();
           if (this.rigSelected) this.gizmo?.attach(this.gizmoProxy);
         }
+        this.restyleHandles();
       });
       this.gizmo.addEventListener("objectChange", () => {
         if (!this.gizmoDragging) return;

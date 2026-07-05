@@ -104,8 +104,15 @@ No unit-test framework yet — the three `npm run` scripts above are the regress
                           setClip in the edit path. Rig state auto-saves to localStorage per recording
                           (wanimrig:<name>:<frames>) and exports/imports as .rig.json. Order: modifiers → layers;
                           both apply to display AND all three exports (wanim path re-applies them to its own clip).
-                          Viewport: effector handles + TransformControls gizmo (drag = live single-frame solve via
-                          setPoseOverride, key lands at the playhead on release, full rebake async). Undo/redo =
+                          Viewport: small faint effector handles (hover brightens, dim while dragging) +
+                          TransformControls gizmo, LOCAL space default (world rings never align with a limb — that
+                          read as "snapping"; Q toggles, W/E set move/rotate). Handles are DIRECTLY draggable in the
+                          camera plane (Poser style, no gizmo grab needed); a handle click beats the gizmo unless
+                          it's the selected effector's own. Drag routing is by WHAT CHANGED (pos vs rot), not gizmo
+                          mode — needed because direct drags always send positions. Translate-dragging an FK bone =
+                          swing about its joint toward the drag (fkDragRef tip chains; pulling the chest forward
+                          LEANS it forward), stored as a world-space rotation key. Drags = live single-frame solve
+                          via setPoseOverride; key lands at the playhead on release. Undo/redo =
                           JSON snapshots of layers+modifiers pushed BEFORE each mutation (buttons + Ctrl+Z/Y via a
                           module-level hotkey singleton so re-loading a file doesn't stack listeners).
   → src/preview/scene.ts: Three.js Object3D bone hierarchy driven per-frame; LineSegments + Points stick figure. Supports trim looping (setTrim).
