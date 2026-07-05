@@ -7,7 +7,7 @@ import {
   applyRigLayers, nearestFrame,
   effectorDef, effectorForBone, effectorColor, retimeKeys, keyFullPose,
   bakeRange, bakeRangeAsync, dirtyRange, unionRange, fkDragRef, setKeyEase, reduceKeys,
-  fullStackPose, belowStackPose, clonePose, solveEffectorOnPose, captureBoneKeys,
+  stackPoseThrough, belowStackPose, clonePose, solveEffectorOnPose, captureBoneKeys, applyLayersToPose, convertLayerMode,
   type RigLayer, type EffectorId, type TimeRange, type EffectorTarget,
 } from "./rig/rig.ts";
 import { worldFromLocal, type FramePose } from "./convert/fk.ts";
@@ -654,7 +654,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   // ---- key multi-selection + clipboard ------------------------------------
   interface PickedKey { effector: EffectorId; time: number; }
   let pickedKeys: PickedKey[] = [];
-  let keyClipboard: Array<{ effector: EffectorId; dt: number; pos?: Vec3; rot?: Quat }> = [];
+  let keyClipboard: Array<{ effector: EffectorId; dt: number; mode: RigLayer["mode"]; pos?: Vec3; rot?: Quat }> = [];
   const isPicked = (eff: EffectorId, t: number) => pickedKeys.some((p) => p.effector === eff && Math.abs(p.time - t) < 1e-3);
 
   function copyPicked() {
@@ -671,6 +671,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       keyClipboard.push({
         effector: p.effector,
         dt: p.time - t0,
+        mode: layer.mode,
         pos: pk ? ([...pk.v] as Vec3) : undefined,
         rot: rk ? ([...rk.q] as Quat) : undefined,
       });
@@ -680,6 +681,12 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   function pastePicked() {
     const layer = rigLayers[activeLayerIdx];
     if (!layer || !keyClipboard.length || !preview) return;
+    // Additive deltas and override values are different quantities — pasting
+    // across modes would scramble the pose.
+    if (keyClipboard[0].mode && keyClipboard[0].mode !== layer.mode) {
+      showError(`These keys were copied from an ${keyClipboard[0].mode} layer — paste them onto an ${keyClipboard[0].mode} layer (this one is ${layer.mode}).`);
+      return;
+    }
     const t0 = preview.getTime();
     pushHistory();
     let dirty: TimeRange | null = null;
@@ -1075,7 +1082,13 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         mode.appendChild(o);
       }
       mode.addEventListener("click", (e) => e.stopPropagation());
-      mode.addEventListener("change", () => { pushHistory(); layer.mode = mode.value as RigLayer["mode"]; rebakeRig(); });
+      mode.addEventListener("change", () => {
+        pushHistory();
+        // Convert existing keys so the pose survives the mode switch.
+        if (rigBaseClip) convertLayerMode(rigBaseClip, rigLayers, i, mode.value as RigLayer["mode"]);
+        else layer.mode = mode.value as RigLayer["mode"];
+        rebakeRig();
+      });
 
       const extent = document.createElement("select");
       extent.title = "Fade: keys ease in/out around the keyed range — one key is a local correction. Hold: the first/last key extends across the whole clip, MoBu style.";
@@ -1188,10 +1201,12 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     const t = rigBaseClip.times[f] - rigBaseClip.times[0];
     pushHistory();
     // Neutral = key the below-stack pose: identity delta on additive layers,
-    // the unadjusted local value on override layers.
+    // the unadjusted local value on override layers. Covers the same bones a
+    // drag on this effector would write (the whole IK chain).
     const below = belowStackPose(rigBaseClip, rigLayers, activeLayerIdx, f);
+    const bones = def.chain ? [def.chain.root, def.chain.mid, def.bone] : [def.bone];
     const dirty = captureBoneKeys(
-      rigBaseClip, rigLayers, activeLayerIdx, [def.bone], below, f, t, selectedEffector === "hips",
+      rigBaseClip, rigLayers, activeLayerIdx, bones, below, f, t, selectedEffector === "hips",
     );
     rebakeRig(dirty ?? undefined);
     updateRigEditor();
@@ -1250,10 +1265,12 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       const f = nearestFrame(rigBaseClip, preview!.getTime());
       const t = rigBaseClip.times[f] - rigBaseClip.times[0];
       preview!.seek(t);
-      const startPose = fullStackPose(rigBaseClip, rigLayers, f);
+      // Solve against the stack THROUGH the active layer only — layers above
+      // must not be absorbed into the captured keys (they apply on top).
+      const startPose = stackPoseThrough(rigBaseClip, rigLayers, activeLayerIdx, f);
       const world = worldFromLocal(rigBaseClip.parents, startPose);
       const b = rigBaseClip.names.indexOf(effectorDef(e).bone);
-      const fkRef = effectorDef(e).canMove ? null : fkDragRef(rigBaseClip, rigLayers, e, f);
+      const fkRef = effectorDef(e).canMove ? null : fkDragRef(rigBaseClip, rigLayers, activeLayerIdx, e, f);
       dragCtx = {
         effector: e, f, t, startPose,
         startWorld: { pos: world.pos[b], rot: world.rot[b] },
@@ -1287,7 +1304,11 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       if (!bones.length) return;
       dragCtx.solved = solved;
       dragCtx.bones = bones;
-      preview?.setPoseOverride(solved);
+      // Display = solved + the layers ABOVE the active one, so the live view
+      // matches what the bake will produce with the full stack.
+      const display = clonePose(solved);
+      applyLayersToPose(display, rigBaseClip.names, rigBaseClip.parents, rigLayers.slice(activeLayerIdx + 1), dragCtx.t);
+      preview?.setPoseOverride(display);
     },
     onDragEnd: () => {
       if (!dragCtx) return;

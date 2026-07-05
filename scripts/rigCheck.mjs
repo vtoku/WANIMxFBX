@@ -14,6 +14,7 @@ const {
   retimeKeys, keyFullPose, bakeRange, dirtyRange, reduceKeys, setKeyEase,
   keyEffectorTarget, fullStackPose, belowStackPose, captureBoneKeys, effectorDef,
 } = await import("../src/rig/rig.ts");
+void fullStackPose;
 const { worldFromLocal } = await import("../src/convert/fk.ts");
 
 const path = process.argv[2] ?? "C:\\Users\\VTOKU\\Downloads\\All-The-Things-2-2026-05-24-18-55-10.wanim";
@@ -152,6 +153,82 @@ const f0 = 0;
   check("fade range: full at keys, interpolated mid-range, zero outside",
     at(5) > 0.045 && at(9) > 0.045 && at(7) > 0.02 && at(0.5) < 0.001 && at(20) < 0.001,
     `@5 ${mm(at(5))} @7 ${mm(at(7))} @9 ${mm(at(9))} @0.5 ${mm(at(0.5))} @20 ${mm(at(20))} mm`);
+}
+
+// --- 3b. editing a NON-TOP layer must not absorb the layers above ----------------
+{
+  const l0 = makeLayer("L0");
+  l0.extent = "hold";
+  const l1 = makeLayer("L1");
+  l1.extent = "hold";
+  // L1 (above) bends the spine.
+  const ang = 15 * Math.PI / 180;
+  setRotKey(getTrack(l1, "spine", true), tKey, [Math.sin(ang / 2), 0, 0, Math.cos(ang / 2)]);
+  const layers = [l0, l1];
+  // Edit L0 (below): place the hand at a target. Pull TOWARD the shoulder so
+  // the target is always inside the arm's reach on any recording.
+  const shoulder = world(c, fKey).pos[boneI("RightUpperArm")];
+  const handP = world(c, fKey).pos[hand];
+  const target = [
+    handP[0] + (shoulder[0] - handP[0]) * 0.15,
+    handP[1] + (shoulder[1] - handP[1]) * 0.15,
+    handP[2] + (shoulder[2] - handP[2]) * 0.15,
+  ];
+  keyEffectorTarget(c, layers, 0, "rightHand", fKey, { pos: target });
+  // With L1 DISABLED, L0's keys alone must reproduce the solved-through-L0
+  // result: the hand at the target. If capture had absorbed L1's spine bend,
+  // the hand would be off by that bend here (and doubled with L1 on).
+  l1.enabled = false;
+  const baked = applyRigLayers(c, layers);
+  const err = dist(world(baked, fKey).pos[hand], target);
+  check("layer scoping: keys on a lower layer don't absorb the layers above",
+    err < 0.002, `hand err ${mm(err)}mm with the upper layer muted`);
+  l1.enabled = true;
+}
+
+// --- 3c. time base: keys live in PLAYBACK time even when timestamps don't start at 0
+{
+  // Synthesize a clip whose timestamps start at +0.75 s (some recorders do).
+  const shifted = { ...c, times: c.times.map((t) => t + 0.75) };
+  const layer = makeLayer("T"); // fade 0.5 — sensitive to any time offset
+  const layers = [layer];
+  const fT = nearestFrame(shifted, tKey);
+  const shoulderT = world(c, fT).pos[boneI("RightUpperArm")];
+  const handT = world(c, fT).pos[hand];
+  const target = [
+    handT[0] + (shoulderT[0] - handT[0]) * 0.15,
+    handT[1] + (shoulderT[1] - handT[1]) * 0.15,
+    handT[2] + (shoulderT[2] - handT[2]) * 0.15,
+  ];
+  keyEffectorTarget(shifted, layers, 0, "rightHand", fT, { pos: target });
+  const baked = applyRigLayers(shifted, layers);
+  const err = dist(world(baked, fT).pos[hand], target);
+  check("time base: key lands at its frame despite a nonzero first timestamp",
+    err < 0.002, `hand err ${mm(err)}mm (offset recordings)`);
+}
+
+// --- 3d. mode switch converts keys: the pose survives additive ⇄ override --------
+{
+  const { convertLayerMode } = await import("../src/rig/rig.ts");
+  const layer = makeLayer("M");
+  layer.extent = "hold";
+  const layers = [layer];
+  const shoulder = world(c, fKey).pos[boneI("RightUpperArm")];
+  const handP = world(c, fKey).pos[hand];
+  const target = [
+    handP[0] + (shoulder[0] - handP[0]) * 0.15,
+    handP[1] + (shoulder[1] - handP[1]) * 0.15,
+    handP[2] + (shoulder[2] - handP[2]) * 0.15,
+  ];
+  keyEffectorTarget(c, layers, 0, "rightHand", fKey, { pos: target }); // additive keys
+  const before = world(applyRigLayers(c, layers), fKey).pos[hand];
+  convertLayerMode(c, layers, 0, "override");
+  const afterOv = world(applyRigLayers(c, layers), fKey).pos[hand];
+  convertLayerMode(c, layers, 0, "additive");
+  const afterBack = world(applyRigLayers(c, layers), fKey).pos[hand];
+  check("mode switch: pose preserved additive→override→additive",
+    layer.mode === "additive" && dist(before, afterOv) < 0.001 && dist(before, afterBack) < 0.001,
+    `override drift ${mm(dist(before, afterOv))}mm, round-trip ${mm(dist(before, afterBack))}mm`);
 }
 
 // --- 4b. OVERRIDE SECTION HOLDS: keyed span pins the pose, no mid-span collapse --

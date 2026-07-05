@@ -383,7 +383,9 @@ function makeBakeStep(
   const t1 = range ? range.t1 : Infinity;
 
   return (f: number) => {
-    const t = base.times[f];
+    // Keys live in PLAYBACK time (0-based); recordings' timestamps may not
+    // start at zero, so normalize — otherwise every key is off by times[0].
+    const t = base.times[f] - base.times[0];
     if (t < t0 || t > t1) return; // outside the edit — keep the previous bake
     if (!windows.some((w) => t >= w.t0 && t <= w.t1)) {
       for (let b = 0; b < bones; b++) {
@@ -478,17 +480,32 @@ export function clonePose(pose: FramePose): FramePose {
   return { pos: pose.pos.map((p) => [...p] as Vec3), quat: pose.quat.map((q) => [...q] as Quat) };
 }
 
+/** A frame's PLAYBACK time (keys and envelopes live in this time base). */
+export const frameTime = (clip: ConvertedClip, f: number): number => clip.times[f] - clip.times[0];
+
 /** Pose through the FULL enabled stack at frame f. */
 export function fullStackPose(clip: ConvertedClip, layers: RigLayer[], f: number): FramePose {
   const pose = poseAtFrame(clip, f);
-  applyLayersToPose(pose, clip.names, clip.parents, layers, clip.times[f]);
+  applyLayersToPose(pose, clip.names, clip.parents, layers, frameTime(clip, f));
+  return pose;
+}
+
+/**
+ * Pose through the stack UP TO AND INCLUDING `layerIndex` at frame f — the
+ * reference a drag on that layer solves against. Solving on the FULL stack
+ * would absorb the layers ABOVE into the captured keys, and they'd then
+ * apply twice at bake.
+ */
+export function stackPoseThrough(clip: ConvertedClip, layers: RigLayer[], layerIndex: number, f: number): FramePose {
+  const pose = poseAtFrame(clip, f);
+  applyLayersToPose(pose, clip.names, clip.parents, layers.slice(0, layerIndex + 1), frameTime(clip, f));
   return pose;
 }
 
 /** Pose through the layers BELOW `layerIndex` at frame f. */
 export function belowStackPose(clip: ConvertedClip, layers: RigLayer[], layerIndex: number, f: number): FramePose {
   const pose = poseAtFrame(clip, f);
-  applyLayersToPose(pose, clip.names, clip.parents, layers.slice(0, layerIndex), clip.times[f]);
+  applyLayersToPose(pose, clip.names, clip.parents, layers.slice(0, layerIndex), frameTime(clip, f));
   return pose;
 }
 
@@ -629,19 +646,53 @@ export function keyEffectorTarget(
   f: number,
   target: EffectorTarget,
 ): TimeRange | null {
-  const pose = fullStackPose(clip, layers, f);
+  const pose = stackPoseThrough(clip, layers, layerIndex, f);
   const bones = solveEffectorOnPose(pose, clip.names, clip.parents, effector, target);
   if (!bones.length) return null;
-  const t = clip.times[f] - clip.times[0];
-  return captureBoneKeys(clip, layers, layerIndex, bones, pose, f, t, effector === "hips" && !!target.pos);
+  return captureBoneKeys(clip, layers, layerIndex, bones, pose, f, frameTime(clip, f), effector === "hips" && !!target.pos);
+}
+
+/**
+ * Switch a layer's mode, CONVERTING every key so the pose it produces is
+ * preserved: additive delta ⇄ override local value, translated against the
+ * below-stack at each key's frame. Without this, flipping the dropdown
+ * reinterprets deltas as absolute locals (or vice versa) and the pose breaks.
+ */
+export function convertLayerMode(
+  clip: ConvertedClip,
+  layers: RigLayer[],
+  layerIndex: number,
+  newMode: "override" | "additive",
+): void {
+  const layer = layers[layerIndex];
+  if (!layer || layer.mode === newMode) return;
+  for (const track of layer.tracks) {
+    const b = clip.names.indexOf(track.bone);
+    if (b < 0) continue;
+    for (const k of track.rotKeys) {
+      const below = belowStackPose(clip, layers, layerIndex, nearestFrame(clip, k.time));
+      k.q =
+        newMode === "override"
+          ? quatNormalize(quatMul(below.quat[b], k.q)) // value = base ⊗ delta
+          : quatNormalize(quatMul(qconj(below.quat[b]), k.q)); // delta = base⁻¹ ⊗ value
+    }
+    if (track.bone === "Hips") {
+      for (const k of track.posKeys) {
+        const below = belowStackPose(clip, layers, layerIndex, nearestFrame(clip, k.time));
+        k.v = newMode === "override" ? vadd(below.pos[b], k.v) : vsub(k.v, below.pos[b]);
+      }
+    }
+  }
+  layer.mode = newMode;
 }
 
 /**
  * Key the full current pose (every effector bone) at time t — locks the pose
- * so edits elsewhere can't disturb this moment. Pure local capture, no IK.
+ * so edits elsewhere can't disturb this moment. Captures the stack THROUGH
+ * the edited layer (layers above must not get absorbed and applied twice).
  */
 export function keyFullPose(clip: ConvertedClip, layers: RigLayer[], layerIndex: number, t: number, f: number): void {
-  const pose = fullStackPose(clip, layers, f);
+  const pose = stackPoseThrough(clip, layers, layerIndex, f);
   const bones = EFFECTORS.map((e) => e.bone).filter((b) => clip.names.indexOf(b) >= 0);
   captureBoneKeys(clip, layers, layerIndex, bones, pose, f, t, true);
 }
@@ -655,13 +706,14 @@ export function keyFullPose(clip: ConvertedClip, layers: RigLayer[], layerIndex:
 export function fkDragRef(
   clip: ConvertedClip,
   layers: RigLayer[],
+  layerIndex: number,
   effector: EffectorId,
   f: number,
 ): { joint: Vec3; tip: Vec3 } | null {
   const def = effectorDef(effector);
   const bone = clip.names.indexOf(def.bone);
   if (bone < 0) return null;
-  const pose = fullStackPose(clip, layers, f);
+  const pose = stackPoseThrough(clip, layers, layerIndex, f);
   const world = worldFromLocal(clip.parents, pose);
   const joint = world.pos[bone];
   if (def.tip) {
