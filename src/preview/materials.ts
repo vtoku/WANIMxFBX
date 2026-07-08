@@ -7,15 +7,12 @@ import * as THREE from "three";
  * feeds what little reflectivity there is.
  */
 export function makeAvatarMaterial(): THREE.MeshStandardMaterial {
-  // Cascadeur-mannequin treatment in DIO orange: vivid base that stays
-  // saturated on the shadow side (strong same-hue emissive lift), soft
-  // plastic sheen, barely-there metal.
   return new THREE.MeshStandardMaterial({
-    color: 0xffa22e, // DIO orange, bright
-    metalness: 0.2,
-    roughness: 0.5,
-    emissive: 0xff8a1a,
-    emissiveIntensity: 0.3,
+    color: 0xe9a13b, // DIO orange-gold
+    metalness: 0.3, // just a hint of metal
+    roughness: 0.6,
+    emissive: 0xb06f14,
+    emissiveIntensity: 0.16, // slight self-glow
     side: THREE.DoubleSide, // VRM skirts/hair are single-sided planes
   });
 }
