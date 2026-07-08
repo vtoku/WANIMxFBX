@@ -26,36 +26,36 @@ function resinMatcap(): THREE.Texture {
   };
   // Base resin body: warm orange, darkening toward the lower-right shadow.
   g.fillStyle = rg(0.42, 0.4, 0, 0.85, [
-    [0, "#f98c22"],
-    [0.45, "#ef7413"],
-    [0.75, "#c1560a"],
-    [1, "#8f3c05"],
+    [0, "#e87f1c"],
+    [0.45, "#d8680f"],
+    [0.75, "#a94b08"],
+    [1, "#7c3404"],
   ]);
   g.fillRect(0, 0, S, S);
   // Subsurface rim glow — translucent resin brightens at grazing angles.
   g.fillStyle = rg(0.5, 0.5, 0.62, 1.0, [
     [0, "rgba(255,180,80,0)"],
-    [0.72, "rgba(255,178,74,0.42)"],
-    [0.92, "rgba(255,205,110,0.75)"],
-    [1, "rgba(255,215,130,0.8)"],
+    [0.72, "rgba(255,170,70,0.24)"],
+    [0.92, "rgba(255,190,95,0.42)"],
+    [1, "rgba(255,195,105,0.46)"],
   ]);
   g.fillRect(0, 0, S, S);
   // Broad soft key highlight, upper-left.
   g.fillStyle = rg(0.36, 0.32, 0, 0.4, [
-    [0, "rgba(255,242,220,0.68)"],
-    [0.55, "rgba(255,220,170,0.25)"],
-    [1, "rgba(255,220,170,0)"],
+    [0, "rgba(255,238,214,0.36)"],
+    [0.55, "rgba(255,215,165,0.13)"],
+    [1, "rgba(255,215,165,0)"],
   ]);
   g.fillRect(0, 0, S, S);
   // Tight hot specular.
-  g.fillStyle = rg(0.34, 0.3, 0, 0.09, [
-    [0, "rgba(255,255,252,0.95)"],
-    [1, "rgba(255,255,252,0)"],
+  g.fillStyle = rg(0.34, 0.3, 0, 0.07, [
+    [0, "rgba(255,252,244,0.5)"],
+    [1, "rgba(255,252,244,0)"],
   ]);
   g.fillRect(0, 0, S, S);
   // Faint warm bounce, lower area.
   g.fillStyle = rg(0.6, 0.82, 0, 0.3, [
-    [0, "rgba(255,160,70,0.28)"],
+    [0, "rgba(255,150,65,0.16)"],
     [1, "rgba(255,160,70,0)"],
   ]);
   g.fillRect(0, 0, S, S);
