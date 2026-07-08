@@ -8,7 +8,7 @@ import * as THREE from "three";
  */
 export function makeAvatarMaterial(): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
-    color: 0xe89b2e, // DIO orange at the reference's sat/brightness
+    color: 0xee8a1f, // DIO orange — Nendoroid-jacket vivid, not amber
     metalness: 0,
     roughness: 0.72, // broad soft sheen, no hotspots
     side: THREE.DoubleSide, // VRM skirts/hair are single-sided planes
