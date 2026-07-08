@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
+import { makeAvatarMaterial } from "./materials.ts";
 
 // The facecap head (three.js example model, by Face Cap / Bannaflak) carries
 // the 52 ARKit blendshapes as morph targets, but names them with _L/_R suffixes
@@ -126,9 +127,16 @@ export class FaceOverlay {
     inner.scale.setScalar(s);
     this.group.add(inner);
 
+    // Same champagne finish as the body (the GLB ships textureless).
+    const avatarMat = makeAvatarMaterial();
     model.traverse((o) => {
       const mesh = o as THREE.Mesh;
-      if (mesh.isMesh && mesh.morphTargetDictionary) this.morphMesh = mesh;
+      if (!mesh.isMesh) return;
+      const old = mesh.material;
+      if (Array.isArray(old)) old.forEach((m) => m.dispose());
+      else (old as THREE.Material | undefined)?.dispose();
+      mesh.material = avatarMat;
+      if (mesh.morphTargetDictionary) this.morphMesh = mesh;
     });
   }
 

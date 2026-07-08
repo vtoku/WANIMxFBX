@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { bindWorldPositions, type ConvertedClip } from "../convert/clip.ts";
 import { buildBodyData } from "../convert/body.ts";
 import { augmentFaceForVrm } from "../convert/vrmFaceMap.ts";
@@ -119,9 +120,16 @@ export class PreviewScene {
     this.controls.enableDamping = true;
     this.controls.target.set(0, 1.0, 0);
 
+    // Studio environment map: the semi-gloss metallic avatar finish needs
+    // something to reflect (metals render near-black without one). Lights
+    // are dialed down to compensate — the env carries most of the fill.
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.scene.environmentIntensity = 0.55;
+    pmrem.dispose();
     this.scene.add(
-      new THREE.HemisphereLight(0xffffff, 0x40404c, 1.4),
-      new THREE.AmbientLight(0xffffff, 0.6),
+      new THREE.HemisphereLight(0xffffff, 0x40404c, 0.9),
+      new THREE.AmbientLight(0xffffff, 0.25),
     );
     this.scene.add(new THREE.GridHelper(10, 20, 0x2a2f3a, 0x1b1f27));
 
@@ -496,8 +504,10 @@ export class PreviewScene {
     );
     this.ghostLines = new THREE.LineSegments(
       geo,
-      new THREE.LineBasicMaterial({ color: 0x8a8f9a, transparent: true, opacity: 0.45 }),
+      // Overlay like the ghost body: always visible, never z-fighting.
+      new THREE.LineBasicMaterial({ color: 0x8a8f9a, transparent: true, opacity: 0.4, depthTest: false, depthWrite: false }),
     );
+    this.ghostLines.renderOrder = 8;
     this.ghostLines.frustumCulled = false;
     this.scene.add(this.ghostLines);
     this.attachGhostBody(clip);
@@ -519,11 +529,14 @@ export class PreviewScene {
         const group = buildBodyMeshes(data.meshes, nodes, bindWorld);
         // One flat, unlit, translucent material for the whole ghost —
         // silhouette only (textures/lighting would read as a second person).
+        // A true OVERLAY: no depth test, drawn after the body — coplanar
+        // surfaces would otherwise z-fight whenever the poses coincide.
         const mat = new THREE.MeshBasicMaterial({
           color: 0x9fb6d8,
           transparent: true,
-          opacity: 0.16,
+          opacity: 0.14,
           depthWrite: false,
+          depthTest: false,
           side: THREE.DoubleSide,
         });
         const orphaned = new Set<THREE.Material>();
@@ -532,6 +545,7 @@ export class PreviewScene {
           if (!mesh.isMesh) return;
           orphaned.add(mesh.material as THREE.Material);
           mesh.material = mat;
+          mesh.renderOrder = 8; // above the scene, below rig handles (10) / gizmo (20)
         });
         for (const m of orphaned) m.dispose();
         this.ghostMat = mat;

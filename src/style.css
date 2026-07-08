@@ -15,6 +15,11 @@
   box-sizing: border-box;
 }
 
+input[type="range"],
+input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
 /* Class rules below set display:flex/grid, which would otherwise beat the
    [hidden] attribute's display:none (attribute selectors lose to classes). */
 [hidden] {
@@ -445,7 +450,9 @@ main:has(.loaded-state:not([hidden])) {
   position: absolute;
   top: 0;
   bottom: 0;
-  background: rgba(245, 179, 1, 0.2);
+  /* Neutral fill — a gold wash over the whole strip was too loud; the
+     handles + hairline edges carry the accent. */
+  background: rgba(150, 160, 180, 0.18);
   border-left: 1px solid var(--accent);
   border-right: 1px solid var(--accent);
 }

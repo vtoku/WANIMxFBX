@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { BodyMeshData } from "../convert/body.ts";
 import type { Vec3 } from "../wanim/parse.ts";
+import { makeAvatarMaterial } from "./materials.ts";
 
 /**
  * Build preview SkinnedMeshes from retargeted body data, bound to the
@@ -17,14 +18,8 @@ export function buildBodyMeshes(
   );
   const group = new THREE.Group();
   // DoubleSide: VRM skirts/hair are single-sided planes (holes otherwise).
-  // Gold mannequin: warm metallic look (metalness stays modest — the scene
-  // has no environment map, so high metalness just reads as black).
-  const fallback = new THREE.MeshStandardMaterial({
-    color: 0xd8a93c,
-    roughness: 0.45,
-    metalness: 0.35,
-    side: THREE.DoubleSide,
-  });
+  // Champagne-gold mannequin (shared finish with the facecap head).
+  const fallback = makeAvatarMaterial();
 
   for (const m of data) {
     const geo = new THREE.BufferGeometry();
