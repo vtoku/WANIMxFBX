@@ -4,8 +4,8 @@
 <body>
 <script type="importmap">
 { "imports": {
-  "three": "/WANIMxFBX/node_modules/three/build/three.module.js",
-  "three/addons/": "/WANIMxFBX/node_modules/three/examples/jsm/"
+  "three": "/node_modules/three/build/three.module.js",
+  "three/addons/": "/node_modules/three/examples/jsm/"
 } }
 </script>
 <script type="module">
@@ -25,7 +25,7 @@ scene.background = new THREE.Color(0x202228);
 scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.6), new THREE.AmbientLight(0xffffff, 0.5));
 scene.add(new THREE.GridHelper(400, 20, 0x3a3f4a, 0x2a2f37));
 
-const group = await new FBXLoader().loadAsync(`/WANIMxFBX/scripts/${file}`);
+const group = await new FBXLoader().loadAsync(`/scripts/${file}`);
 scene.add(group);
 
 // Play the main clip to time t.

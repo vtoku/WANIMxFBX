@@ -1,6 +1,6 @@
 import { chromium } from "playwright";
 import { readFileSync } from "node:fs";
-const URL = "http://localhost:5173/WANIMxFBX/";
+const URL = "http://localhost:5173/";
 const WANIM = "C:\\Users\\VTOKU\\Downloads\\takyon take 2.wanim";
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1100, height: 900 } });

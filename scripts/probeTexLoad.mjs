@@ -5,7 +5,7 @@ const browser = await chromium.launch();
 const page = await browser.newPage();
 page.on("console", (m) => console.log("[page]", m.text()));
 page.on("pageerror", (e) => console.log("[pageerror]", e.message));
-await page.goto("http://localhost:5173/WANIMxFBX/scripts/fbxView.html?file=/WANIMxFBX/scripts/full.fbx");
+await page.goto("http://localhost:5173/scripts/fbxView.html?file=/scripts/full.fbx");
 await page.waitForTimeout(6000);
 const info = await page.evaluate(() => {
   const out = [];

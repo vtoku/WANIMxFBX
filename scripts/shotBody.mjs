@@ -1,6 +1,6 @@
 import { chromium } from "playwright";
 import { readFileSync } from "node:fs";
-const URL = process.env.APP_URL ?? "http://localhost:5173/WANIMxFBX/";
+const URL = process.env.APP_URL ?? "http://localhost:5173/";
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1180, height: 760 } });
 const errors = [];

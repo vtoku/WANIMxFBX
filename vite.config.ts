@@ -1,10 +1,11 @@
 import { defineConfig } from "vite";
 
-// GitHub Pages serves this project site under /WANIMxFBX/.
-// With the default base ('/') every built asset 404s in production while
-// working fine in `vite dev`. Always validate the built site with `vite preview`.
+// Served from the custom apex domain https://wryanimator.com/ (public/CNAME),
+// so the site lives at the domain root and base is '/'.
+// (Was '/WANIMxFBX/' when hosted at vtoku.github.io/WANIMxFBX/ — a custom
+// domain serves from root, so a '/WANIMxFBX/' base would 404 every asset.)
 export default defineConfig({
-  base: "/WANIMxFBX/",
+  base: "/",
   build: {
     target: "es2021",
     sourcemap: true,

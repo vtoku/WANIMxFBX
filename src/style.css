@@ -43,20 +43,38 @@ body {
 
 .logo {
   display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
+  align-items: baseline;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  user-select: none;
 }
 
-.logo-x {
-  width: 1em;
-  height: 1em;
-  fill: var(--accent);
+/* Wild JoJo-style "WRY": condensed impact face, italic skew, gold gradient. */
+.logo-wry {
+  font-family: Impact, "Haettenschweiler", "Arial Narrow Bold", sans-serif;
+  font-weight: 900;
+  font-style: italic;
+  font-size: 1.18em;
+  letter-spacing: 0.02em;
+  transform: skewX(-7deg);
+  transform-origin: bottom left;
+  background: linear-gradient(180deg, #ffe7a0 0%, #ffc030 52%, #d97b0c 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(1px 1.5px 0 rgba(0, 0, 0, 0.5));
+  margin-right: 0.14em;
+}
+
+/* Clean, understated companion word. */
+.logo-anim {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+  color: var(--text);
 }
 
 .logo-hero {
-  font-size: 2.2rem;
+  font-size: 2.4rem;
 }
 
 .topbar-right {
@@ -318,6 +336,26 @@ main:has(.loaded-state:not([hidden])) {
 .t-play {
   font-size: 1rem;
   min-width: 2.2rem;
+}
+
+.t-rate {
+  background: rgba(40, 46, 56, 0.9);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3rem 0.3rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+/* Cleaning tick marks: passive canvas under the interactive strip layers. */
+.t-marks {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  border-radius: 4px;
 }
 
 .t-timeline {

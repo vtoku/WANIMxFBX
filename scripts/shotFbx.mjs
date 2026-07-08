@@ -1,5 +1,5 @@
 import { chromium } from "playwright";
-const base = "http://localhost:5173/WANIMxFBX/scripts/fbxView.html";
+const base = "http://localhost:5173/scripts/fbxView.html";
 const shots = [
   ["t=0", "fbx-t0.png"],
   ["t=3", "fbx-t3.png"],

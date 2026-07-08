@@ -1,7 +1,7 @@
 import { chromium } from "playwright";
 import { readFileSync } from "node:fs";
 
-const URL = process.env.APP_URL ?? "http://localhost:5173/WANIMxFBX/";
+const URL = process.env.APP_URL ?? "http://localhost:5173/";
 const WANIM = process.argv[2] ?? "C:\\Users\\VTOKU\\Downloads\\takyon take 2.wanim";
 const VRM = process.argv[3] ?? "C:\\Users\\VTOKU\\Downloads\\AshtonMartenARKIT.vrm";
 

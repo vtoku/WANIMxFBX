@@ -2,7 +2,7 @@
 
 A browser tool that converts a Warudo `.wanim` animation recording into an FBX animation.
 
-https://vtoku.github.io/WANIMxFBX/
+https://wryanimator.com/
 
 ## What it does
 

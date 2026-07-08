@@ -1,6 +1,6 @@
 import { chromium } from "playwright";
 import { readFileSync } from "node:fs";
-const URL = "http://localhost:5173/WANIMxFBX/";
+const URL = "http://localhost:5173/";
 const WANIM = "C:\\Users\\VTOKU\\Downloads\\takyon take 2.wanim";
 const VRM = "C:\\Users\\VTOKU\\Downloads\\AshtonMartenARKIT.vrm";
 
