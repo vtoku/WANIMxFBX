@@ -5,7 +5,7 @@
   --border: #2a2f38;
   --text: #e8eaee;
   --text-dim: #9aa1ad;
-  --accent: #6ea8ff;
+  --accent: var(--logo-accent); /* highlight = the logo gold */
   --logo-accent: #f5b301;
   --error: #ff7b72;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -202,6 +202,8 @@ main:has(.loaded-state:not([hidden])) {
 
 .editbar {
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
   align-items: center;
   gap: 0.5rem;
   padding: 0.4rem 0.8rem;
@@ -232,6 +234,31 @@ main:has(.loaded-state:not([hidden])) {
   cursor: pointer;
 }
 
+/* Load/Save file group at the transport's left, divided from playback. */
+.t-file {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+  padding-right: 0.6rem;
+  border-right: 1px solid var(--border);
+}
+
+/* Icon buttons (iconsax linear, stroke = currentColor). */
+.eb-btn svg,
+.t-btn svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+  flex: none;
+}
+
+.eb-ico,
+.t-ico {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
 .eb-btn:disabled {
   opacity: 0.45;
   cursor: default;
@@ -239,7 +266,7 @@ main:has(.loaded-state:not([hidden])) {
 
 .eb-btn.active,
 .eb-btn:hover:not(:disabled) {
-  border-color: #7fb2ff;
+  border-color: var(--accent);
 }
 
 .editbar .button.primary,
@@ -251,6 +278,10 @@ main:has(.loaded-state:not([hidden])) {
 .edit-main {
   display: flex;
   min-height: 0;
+  /* Grid items default to min-width:auto — the canvas's last pixel width
+     would hold the whole row open when the window shrinks, clipping the
+     right-side tools instead of reflowing. */
+  min-width: 0;
 }
 
 .viewport {
@@ -259,6 +290,7 @@ main:has(.loaded-state:not([hidden])) {
   min-width: 0;
   min-height: 0;
   background: #0e1014;
+  overflow: hidden; /* the canvas lags one RO tick behind a shrink */
 }
 
 .viewport canvas {
@@ -298,7 +330,7 @@ main:has(.loaded-state:not([hidden])) {
 
 .dock-tab.active {
   color: var(--text);
-  border-bottom-color: #7fb2ff;
+  border-bottom-color: var(--accent);
 }
 
 .dock-body {
@@ -323,6 +355,7 @@ main:has(.loaded-state:not([hidden])) {
 }
 
 .timeline-dock {
+  min-width: 0;
   border-top: 1px solid var(--border);
   background: var(--bg-raise);
 }
@@ -351,8 +384,10 @@ main:has(.loaded-state:not([hidden])) {
 
 .t-main {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.6rem;
+  row-gap: 0.35rem;
 }
 
 .t-btn {
@@ -398,7 +433,7 @@ main:has(.loaded-state:not([hidden])) {
 .t-timeline {
   position: relative;
   flex: 1;
-  min-width: 0;
+  min-width: 220px;
   height: 22px;
   background: rgba(255, 255, 255, 0.12);
   border-radius: 4px;
@@ -410,7 +445,7 @@ main:has(.loaded-state:not([hidden])) {
   position: absolute;
   top: 0;
   bottom: 0;
-  background: rgba(110, 168, 255, 0.28);
+  background: rgba(245, 179, 1, 0.2);
   border-left: 1px solid var(--accent);
   border-right: 1px solid var(--accent);
 }
@@ -585,8 +620,8 @@ main:has(.loaded-state:not([hidden])) {
 }
 
 .button.compare.active {
-  border-color: #7fb2ff;
-  color: #7fb2ff;
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .hint {
@@ -633,7 +668,7 @@ main:has(.loaded-state:not([hidden])) {
 }
 
 .rig-layer.active {
-  border-color: #7fb2ff;
+  border-color: var(--accent);
 }
 
 .rig-layer .rig-name {

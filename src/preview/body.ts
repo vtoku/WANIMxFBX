@@ -17,10 +17,12 @@ export function buildBodyMeshes(
   );
   const group = new THREE.Group();
   // DoubleSide: VRM skirts/hair are single-sided planes (holes otherwise).
+  // Gold mannequin: warm metallic look (metalness stays modest — the scene
+  // has no environment map, so high metalness just reads as black).
   const fallback = new THREE.MeshStandardMaterial({
-    color: 0x8d97a5,
-    roughness: 0.8,
-    metalness: 0.05,
+    color: 0xd8a93c,
+    roughness: 0.45,
+    metalness: 0.35,
     side: THREE.DoubleSide,
   });
 

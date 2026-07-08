@@ -1,5 +1,6 @@
 import type { PreviewScene, PlaybackState } from "../preview/scene.ts";
 import { CurveView, type CurveModel, type CurveCallbacks } from "./curves.ts";
+import { ICONS } from "./icons.ts";
 
 export interface TransportKeyMarker {
   time: number;
@@ -77,7 +78,11 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
   el.className = "transport-overlay";
   el.innerHTML = `
     <div class="t-main">
-      <button class="t-btn t-play" aria-label="Play/pause" title="Play/pause (Space). ←/→ step a frame, shift for 10.">⏸</button>
+      <span class="t-file">
+        <button class="t-btn t-ico t-scene-open" title="Load a .wanim recording or a saved .scene.json">${ICONS.load}<span>Load</span></button>
+        <button class="t-btn t-ico t-scene-save" title="Save the whole session (recording + edits + settings) as a scene file">${ICONS.save}<span>Save</span></button>
+      </span>
+      <button class="t-btn t-ico t-play" aria-label="Play/pause" title="Play/pause (Space). ←/→ step a frame, shift for 10.">${ICONS.pause}</button>
       <select class="t-rate" title="Playback speed (review only — doesn't change the clip)">
         <option value="0.25">¼×</option>
         <option value="0.5">½×</option>
@@ -97,8 +102,6 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
       <button class="t-btn t-setout" title="Set trim end to playhead">Out</button>
       <button class="t-btn t-reset" title="Clear trim">Reset</button>
       <button class="t-btn t-dope-toggle" hidden title="Show/hide per-part key rows">Keys ▾</button>
-      <button class="t-btn t-scene-open" title="Open a .wanim recording or a saved .scene.json">Open…</button>
-      <button class="t-btn t-scene-save" title="Save the whole session (recording + edits + settings) as a scene file">Save…</button>
     </div>
     <div class="t-dope" hidden>
       <div class="t-dope-rows"></div>
@@ -134,9 +137,13 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
   let lastTime = 0;
   const currentTime = () => lastTime;
   const frameOf = (t: number) => (duration > 0 ? Math.round((t / duration) * (frames - 1)) : 0);
+  let playIconPlaying = true; // matches the initial markup (pause icon)
   preview.setOnState((s: PlaybackState) => {
     lastTime = s.time;
-    playBtn.textContent = s.playing ? "⏸" : "▶";
+    if (s.playing !== playIconPlaying) {
+      playIconPlaying = s.playing;
+      playBtn.innerHTML = s.playing ? ICONS.pause : ICONS.play;
+    }
     playhead.style.left = `${pct(s.time)}%`;
     const len = trimEnd - trimStart;
     const fr = frames > 1 ? `  ·  f ${frameOf(s.time)}/${frames - 1}` : "";

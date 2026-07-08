@@ -174,6 +174,10 @@ export class PreviewScene {
 
     this.ro = new ResizeObserver(() => this.resize());
     this.ro.observe(container);
+    // Moving the window to a differently-scaled monitor changes
+    // devicePixelRatio without necessarily resizing the container — the
+    // window resize event catches it (resize() re-reads the ratio).
+    window.addEventListener("resize", this.onWindowResize);
     this.resize();
     this.animate();
 
@@ -261,7 +265,10 @@ export class PreviewScene {
     this.faceWeights = new Float32Array(this.clip.face.names.length);
   }
 
+  private onWindowResize = () => this.resize();
+
   private resize() {
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     const w = this.container.clientWidth || 1;
     const h = this.container.clientHeight || 1;
     this.renderer.setSize(w, h, true);
@@ -927,6 +934,7 @@ export class PreviewScene {
   dispose() {
     cancelAnimationFrame(this.rafId);
     this.ro.disconnect();
+    window.removeEventListener("resize", this.onWindowResize);
     this.gizmo?.dispose();
     this.gizmo = null;
     this.clearGhost();

@@ -27,6 +27,7 @@ import { PreviewScene } from "./preview/scene.ts";
 import { loadFaceMeshData } from "./preview/face.ts";
 import { createTransport, type Transport, type TransportKeyMarker } from "./ui/transport.ts";
 import { saveLastSession, loadLastSession, clearLastSession } from "./session.ts";
+import { ICONS } from "./ui/icons.ts";
 
 const emptyState = document.getElementById("empty-state") as HTMLElement; // drop-prompt overlay in the viewport
 const dropzone = document.getElementById("dropzone") as HTMLElement;
@@ -217,18 +218,16 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   // ---- editor-suite toolbar: global actions, always visible ---------------
   editbar.innerHTML = `
     <div class="eb-group">
-      <button id="rigUndo" class="eb-btn" disabled title="Undo the last rig or modifier edit (Ctrl+Z)">↶ Undo</button>
-      <button id="rigRedo" class="eb-btn" disabled title="Redo (Ctrl+Y)">↷ Redo</button>
+      <button id="rigUndo" class="eb-btn eb-ico" disabled title="Undo the last rig or modifier edit (Ctrl+Z)">${ICONS.undo}<span class="eb-lbl">Undo</span></button>
+      <button id="rigRedo" class="eb-btn eb-ico" disabled title="Redo (Ctrl+Y)">${ICONS.redo}<span class="eb-lbl">Redo</span></button>
     </div>
     <div class="eb-group">
-      <select id="rigGizmo" title="Gizmo mode (W = move, E = rotate). Pulling an FK diamond in move mode swings the bone toward the drag.">
-        <option value="translate" selected>Move</option>
-        <option value="rotate">Rotate</option>
-      </select>
-      <button id="rigSpace" class="eb-btn" title="Gizmo axes: Local follows the bone, World uses the scene axes (Q toggles).">Local</button>
+      <button id="gizmoMove" class="eb-btn eb-ico active" title="Move (W). Pulling an FK diamond swings the bone toward the drag.">${ICONS.move}</button>
+      <button id="gizmoRotate" class="eb-btn eb-ico" title="Rotate (E)">${ICONS.rotate}</button>
+      <button id="rigSpace" class="eb-btn eb-ico" title="Gizmo axes: Local follows the bone, World uses the scene axes (Q toggles).">${ICONS.local}<span class="eb-lbl">Local</span></button>
     </div>
-    <button id="compare" class="eb-btn compare" title="Press and hold to see the recording without any cleaning or rig edits, so you can judge what changed.">Hold: original</button>
-    <button id="ghostBtn" class="eb-btn" title="Overlay the original (uncleaned) recording as a grey ghost skeleton, so you can see what the cleanup changed while you edit.">Ghost</button>
+    <button id="compare" class="eb-btn eb-ico compare" title="Press and hold to see the recording without any cleaning or rig edits, so you can judge what changed.">${ICONS.eye}<span class="eb-lbl">Hold: original</span></button>
+    <button id="ghostBtn" class="eb-btn eb-ico" title="Overlay the original (uncleaned) recording as a translucent ghost, so you can see what the cleanup changed while you edit.">${ICONS.ghost}<span class="eb-lbl">Ghost</span></button>
     <span class="eb-spacer"></span>
     <input id="outName" class="eb-name" type="text" spellcheck="false" title="Base name for exported files (e.g. myclip-clean → myclip-clean.fbx)" />
     <select id="format" aria-label="Export format" title="FBX for MotionBuilder/Maya/Blender; VRMA for Warudo/VSeeFace/Unity; WANIM back into Warudo.">
@@ -777,7 +776,13 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   // compare block; the closures in buildDisplay/export read them.)
   const rigLayersEl = document.getElementById("rigLayers") as HTMLDivElement;
   const rigAddBtn = document.getElementById("rigAdd") as HTMLButtonElement;
-  const rigGizmoSel = document.getElementById("rigGizmo") as HTMLSelectElement;
+  const gizmoMoveBtn = document.getElementById("gizmoMove") as HTMLButtonElement;
+  const gizmoRotateBtn = document.getElementById("gizmoRotate") as HTMLButtonElement;
+  function setGizmoModeUi(m: "translate" | "rotate") {
+    gizmoMoveBtn.classList.toggle("active", m === "translate");
+    gizmoRotateBtn.classList.toggle("active", m === "rotate");
+    preview?.setGizmoMode(m);
+  }
   const rigEditorEl = document.getElementById("rigEditor") as HTMLDivElement;
   const rigSelEl = document.getElementById("rigSel") as HTMLParagraphElement;
   const rigKeysEl = document.getElementById("rigKeys") as HTMLDivElement;
@@ -930,10 +935,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     copy: copyPicked,
     paste: pastePicked,
     del: deletePicked,
-    mode: (m) => {
-      rigGizmoSel.value = m;
-      preview?.setGizmoMode(m);
-    },
+    mode: (m) => setGizmoModeUi(m),
     toggleSpace: () => setGizmoSpaceUi(preview?.getGizmoSpace() === "local" ? "world" : "local"),
   };
 
@@ -1444,14 +1446,14 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     saveRigCache();
   });
 
-  rigGizmoSel.addEventListener("change", () => {
-    preview?.setGizmoMode(rigGizmoSel.value as "translate" | "rotate");
-  });
+  gizmoMoveBtn.addEventListener("click", () => setGizmoModeUi("translate"));
+  gizmoRotateBtn.addEventListener("click", () => setGizmoModeUi("rotate"));
 
   const rigSpaceBtn = document.getElementById("rigSpace") as HTMLButtonElement;
   function setGizmoSpaceUi(s: "local" | "world") {
     preview?.setGizmoSpace(s);
-    rigSpaceBtn.textContent = s === "local" ? "Local" : "World";
+    rigSpaceBtn.innerHTML =
+      (s === "local" ? ICONS.local : ICONS.world) + `<span class="eb-lbl">${s === "local" ? "Local" : "World"}</span>`;
   }
   rigSpaceBtn.addEventListener("click", () => {
     setGizmoSpaceUi(preview?.getGizmoSpace() === "local" ? "world" : "local");
