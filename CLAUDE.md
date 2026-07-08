@@ -116,7 +116,24 @@ No unit-test framework yet — the three `npm run` scripts above are the regress
                           keyFullPose brackets + a fixed key, proven 0.00 mm on any base), additive keys are local
                           deltas ("elbow +20°") that travel exactly when retimed/copied/pasted — NO base-dependent
                           conversion anywhere. A hand IK drag writes keys on its 3 chain bones = the 3 effectors
-                          owning those bones (effectorForBone is 1:1 with EFFECTORS[].bone). Each layer:
+                          owning those bones (effectorForBone = FIRST match per bone; the ROOT effector aliases
+                          Hips and is listed after "hips", so Hips keys display as hips keys). POSER BEHAVIORS
+                          (all capture-time, evaluation untouched, all in rigCheck): PINS — hands/feet can be
+                          pinned (Pin button, chain effectors only; PinTarget world pos+rot captured at
+                          pointer-down via capturePinTargets); after ANY primary solve, solveEffectorOnPose's
+                          pins pass re-solves each pinned limb back onto its captured target (endR = pinned rot,
+                          so a planted foot doesn't twist) — dropping the hips with pinned feet bends the knees.
+                          ROOT — a flat gold ring ON THE FLOOR under the hips (scene special-cases its handle
+                          world at y=0): rigid whole-character transform about that ground pivot; writes ONLY the
+                          Hips track (pos AND rot keys — rotation about the pivot moves the hips position, so
+                          withHipsPos is always true for root). FK LIMB MODE (Mode: IK/FK button): a positional
+                          drag on a hand/foot in FK mode swings the WHOLE chain rigidly from its root joint
+                          (main.ts reroutes the solve to the chain-root effector; keys land on that one bone) —
+                          rotate drags stay wrist/ankle-local. WRIST TWIST DISTRIBUTION (distributeWristTwist):
+                          a hand rotate-drag moves WRIST_TWIST_SHARE (0.6) of the local twist onto the forearm
+                          while preserving the hand's world rotation bit-exact. Pins + FK modes persist in the
+                          rig cache/.rig.json/scene as `pins`/`fk` arrays but are NOT in undo snapshots (tool
+                          state, like the gizmo mode). Each layer:
                           override/additive, weight, extent "fade" (default; FULL strength across the keyed range —
                           keyed override sections HOLD their pose, values interpolate on the layer's own curve —
                           easing to zero only OUTSIDE first/last key; a brief gap-dipping variant collapsed override

@@ -25,6 +25,7 @@ import { worldFromLocal, type FramePose } from "../convert/fk.ts";
 // hand effectors' tracks, which is exactly how MoBu control-rig keys land.
 
 export type EffectorId =
+  | "root"
   | "hips" | "leftHand" | "rightHand" | "leftFoot" | "rightFoot" | "head"
   | "spine" | "chest" | "neck"
   | "leftShoulder" | "rightShoulder"
@@ -50,6 +51,11 @@ export interface EffectorDef {
 
 export const EFFECTORS: EffectorDef[] = [
   { id: "hips", label: "Hips", bone: "Hips", canMove: true, canRotate: true },
+  // Root ALIASES the Hips track (its keys land there) but transforms the
+  // WHOLE character rigidly about the ground point under the hips — the
+  // Poser-style trajectory handle. Listed after "hips" so effectorForBone
+  // still resolves Hips keys to the hips effector for display.
+  { id: "root", label: "Root", bone: "Hips", canMove: true, canRotate: true },
   { id: "leftHand", label: "Left hand", bone: "LeftHand", chain: { root: "LeftUpperArm", mid: "LeftLowerArm" }, canMove: true, canRotate: true },
   { id: "rightHand", label: "Right hand", bone: "RightHand", chain: { root: "RightUpperArm", mid: "RightLowerArm" }, canMove: true, canRotate: true },
   { id: "leftFoot", label: "Left foot", bone: "LeftFoot", chain: { root: "LeftUpperLeg", mid: "LeftLowerLeg" }, canMove: true, canRotate: true },
@@ -72,12 +78,14 @@ export const EFFECTORS: EffectorDef[] = [
 
 export const effectorDef = (id: EffectorId): EffectorDef => EFFECTORS.find((e) => e.id === id)!;
 
-/** The effector whose keys land on this bone (1:1 by design). */
+/** The effector whose keys land on this bone (first match — root aliases
+ *  Hips and is listed after, so Hips keys always display as hips keys). */
 export const effectorForBone = (bone: string): EffectorDef | undefined =>
   EFFECTORS.find((e) => e.bone === bone);
 
 /** Handle/marker color: orange hips, green center column, blue left, pink right. */
 export function effectorColor(id: EffectorId): string {
+  if (id === "root") return "#f5b301";
   if (id === "hips") return "#ffaa33";
   if (id === "head" || id === "neck" || id === "spine" || id === "chest") return "#ccee66";
   return id.startsWith("left") ? "#5599ff" : "#ff5588";
@@ -530,9 +538,43 @@ export interface EffectorTarget {
   rot?: Quat;
 }
 
+/** A limb held in place while something else is dragged (Poser-style pin). */
+export interface PinTarget {
+  effector: EffectorId;
+  /** World position the chain end must stay at. */
+  pos: Vec3;
+  /** World rotation the chain end keeps (a planted foot doesn't twist). */
+  rot: Quat;
+}
+
+/**
+ * World targets for the given pinned effectors, read from `pose` — capture
+ * these BEFORE a drag starts so pins hold their original spot all drag long.
+ */
+export function capturePinTargets(
+  pose: FramePose,
+  names: string[],
+  parents: number[],
+  pinIds: EffectorId[],
+): PinTarget[] {
+  if (!pinIds.length) return [];
+  const world = worldFromLocal(parents, pose);
+  const out: PinTarget[] = [];
+  for (const id of pinIds) {
+    const def = effectorDef(id);
+    if (!def.chain) continue; // only two-bone limbs can be pinned
+    const b = names.indexOf(def.bone);
+    if (b < 0) continue;
+    out.push({ effector: id, pos: [...world.pos[b]] as Vec3, rot: [...world.rot[b]] as Quat });
+  }
+  return out;
+}
+
 /**
  * Solve the effector onto absolute world targets, IN PLACE on `pose`.
  * This runs at CAPTURE time (drags) — never during evaluation/baking.
+ * `pins` are limbs re-solved back onto their captured world targets AFTER
+ * the primary edit (planted feet stay planted while the hips drop).
  * Returns the bones whose locals were written.
  */
 export function solveEffectorOnPose(
@@ -541,56 +583,146 @@ export function solveEffectorOnPose(
   parents: number[],
   effector: EffectorId,
   target: EffectorTarget,
+  pins: PinTarget[] = [],
 ): string[] {
   const def = effectorDef(effector);
   const bone = names.indexOf(def.bone);
   if (bone < 0 || (!target.pos && !target.rot)) return [];
+  const written: string[] = [];
 
-  if (effector === "hips") {
+  if (effector === "root") {
+    // Rigid whole-character transform about the ground point under the hips.
+    // Only the Hips track is written; the body follows by FK inheritance and
+    // pinned limbs are put back by the pins pass below.
+    const p0 = pose.pos[bone];
+    const r0 = pose.quat[bone];
+    const pivot0: Vec3 = [p0[0], 0, p0[2]];
+    const newRot = target.rot ? quatNormalize([...target.rot] as Quat) : r0;
+    const deltaR = target.rot ? quatMul(newRot, qconj(r0)) : IDENTITY;
+    const newPivot = target.pos ? ([...target.pos] as Vec3) : pivot0;
+    pose.pos[bone] = vadd(newPivot, quatRotate(deltaR, vsub(p0, pivot0)));
+    pose.quat[bone] = newRot;
+    written.push(def.bone);
+  } else if (effector === "hips") {
     if (target.pos) pose.pos[bone] = [...target.pos] as Vec3;
     if (target.rot) pose.quat[bone] = quatNormalize([...target.rot] as Quat);
-    return [def.bone];
-  }
-
-  if (!def.chain) {
+    written.push(def.bone);
+  } else if (!def.chain) {
     // FK bone: world-rotation target → local.
     if (!target.rot) return [];
     const world = worldFromLocal(parents, pose);
     pose.quat[bone] = quatNormalize(quatMul(qconj(world.rot[parents[bone]]), target.rot));
-    return [def.bone];
-  }
+    written.push(def.bone);
+  } else {
+    // IK effector.
+    const root = names.indexOf(def.chain.root);
+    const mid = names.indexOf(def.chain.mid);
+    if (root < 0 || mid < 0) return [];
+    let world = worldFromLocal(parents, pose);
 
-  // IK effector.
-  const written: string[] = [];
-  const root = names.indexOf(def.chain.root);
-  const mid = names.indexOf(def.chain.mid);
-  if (root < 0 || mid < 0) return [];
-  let world = worldFromLocal(parents, pose);
-
-  if (target.pos) {
-    const fallback = quatRotate(world.rot[root], [0, 0, effector.endsWith("Foot") ? 1 : -1]);
-    const r = solveTwoBone(
-      {
-        parentRot: world.rot[parents[root]],
-        rootP: world.pos[root], midP: world.pos[mid], endP: world.pos[bone],
-        rootR: world.rot[root], midR: world.rot[mid], endR: world.rot[bone],
-      },
-      target.pos,
-      vnorm(fallback),
-    );
-    if (r) {
-      pose.quat[root] = r.rootLocal;
-      pose.quat[mid] = r.midLocal;
-      pose.quat[bone] = r.endLocal;
-      written.push(def.chain.root, def.chain.mid, def.bone);
-      if (target.rot) world = worldFromLocal(parents, pose);
+    if (target.pos) {
+      const fallback = quatRotate(world.rot[root], [0, 0, effector.endsWith("Foot") ? 1 : -1]);
+      const r = solveTwoBone(
+        {
+          parentRot: world.rot[parents[root]],
+          rootP: world.pos[root], midP: world.pos[mid], endP: world.pos[bone],
+          rootR: world.rot[root], midR: world.rot[mid], endR: world.rot[bone],
+        },
+        target.pos,
+        vnorm(fallback),
+      );
+      if (r) {
+        pose.quat[root] = r.rootLocal;
+        pose.quat[mid] = r.midLocal;
+        pose.quat[bone] = r.endLocal;
+        written.push(def.chain.root, def.chain.mid, def.bone);
+        if (target.rot) world = worldFromLocal(parents, pose);
+      }
+    }
+    if (target.rot) {
+      pose.quat[bone] = quatNormalize(quatMul(qconj(world.rot[mid]), target.rot));
+      if (!written.includes(def.bone)) written.push(def.bone);
     }
   }
-  if (target.rot) {
-    pose.quat[bone] = quatNormalize(quatMul(qconj(world.rot[mid]), target.rot));
-    if (!written.includes(def.bone)) written.push(def.bone);
+
+  // Pins pass: re-solve each pinned limb back onto its captured world target.
+  // Chains are disjoint, so one world snapshot after the primary edit serves
+  // them all; the end bone keeps the PINNED world rotation (solveTwoBone
+  // preserves endR), so a planted foot doesn't twist while the body moves.
+  const activePins = pins.filter((p) => p.effector !== effector);
+  if (activePins.length && written.length) {
+    const world = worldFromLocal(parents, pose);
+    for (const pin of activePins) {
+      const pdef = effectorDef(pin.effector);
+      if (!pdef.chain) continue;
+      const pRoot = names.indexOf(pdef.chain.root);
+      const pMid = names.indexOf(pdef.chain.mid);
+      const pEnd = names.indexOf(pdef.bone);
+      if (pRoot < 0 || pMid < 0 || pEnd < 0) continue;
+      const fallback = quatRotate(world.rot[pRoot], [0, 0, pin.effector.endsWith("Foot") ? 1 : -1]);
+      const r = solveTwoBone(
+        {
+          parentRot: world.rot[parents[pRoot]],
+          rootP: world.pos[pRoot], midP: world.pos[pMid], endP: world.pos[pEnd],
+          rootR: world.rot[pRoot], midR: world.rot[pMid], endR: pin.rot,
+        },
+        pin.pos,
+        vnorm(fallback),
+      );
+      if (r) {
+        pose.quat[pRoot] = r.rootLocal;
+        pose.quat[pMid] = r.midLocal;
+        pose.quat[pEnd] = r.endLocal;
+        for (const b of [pdef.chain.root, pdef.chain.mid, pdef.bone]) {
+          if (!written.includes(b)) written.push(b);
+        }
+      }
+    }
   }
   return written;
+}
+
+/** Share of a hand's local twist that anatomically belongs to the forearm. */
+export const WRIST_TWIST_SHARE = 0.6;
+
+/**
+ * Move a share of the hand's local TWIST (pronation/supination, about its
+ * finger axis) onto the forearm, preserving the hand's world rotation — in a
+ * real arm the forearm carries most of that rotation, so a wrist rotate-drag
+ * should visibly turn the forearm too. Returns the forearm bone name when
+ * anything was moved, for the capture's written-bones list.
+ */
+export function distributeWristTwist(
+  clip: ConvertedClip,
+  pose: FramePose,
+  effector: EffectorId,
+  share = WRIST_TWIST_SHARE,
+): string | null {
+  if (effector !== "leftHand" && effector !== "rightHand") return null;
+  const side = effector === "leftHand" ? "Left" : "Right";
+  const hand = clip.names.indexOf(`${side}Hand`);
+  const fore = clip.names.indexOf(`${side}LowerArm`);
+  if (hand < 0 || fore < 0) return null;
+  // Bone axis = direction to the middle finger in the hand's local frame.
+  const child = clip.names.indexOf(`${side}MiddleProximal`);
+  const off = child >= 0 ? clip.bindPos[child] : ([side === "Left" ? 1 : -1, 0, 0] as Vec3);
+  const len = Math.hypot(off[0], off[1], off[2]) || 1;
+  const ax = off[0] / len, ay = off[1] / len, az = off[2] / len;
+
+  const q = pose.quat[hand];
+  const proj = q[0] * ax + q[1] * ay + q[2] * az;
+  if (Math.hypot(proj, q[3]) < 1e-9) return null;
+  const twist = quatNormalize([ax * proj, ay * proj, az * proj, q[3]] as Quat);
+  const twistAngle = 2 * Math.acos(Math.min(1, Math.abs(twist[3])));
+  if (twistAngle < 1e-4) return null;
+  const swing = quatMul(q, qconj(twist));
+  const moved = quatSlerp(IDENTITY, twist, share);
+  // hand' = swing ⊗ twist^(1-share); forearm ⊗= swing ⊗ twist^share ⊗ swingᵀ
+  // keeps the hand's world rotation bit-exact while the forearm turns.
+  pose.quat[hand] = quatNormalize(quatMul(swing, quatSlerp(IDENTITY, twist, 1 - share)));
+  const carry = quatMul(quatMul(swing, moved), qconj(swing));
+  pose.quat[fore] = quatNormalize(quatMul(pose.quat[fore], carry));
+  return `${side}LowerArm`;
 }
 
 /**
@@ -637,6 +769,8 @@ export function captureBoneKeys(
  * One-call capture: solve the effector to absolute targets at frame f on the
  * full stack, then key the affected bones. Used by tests and any programmatic
  * edits; the viewport drag does the same thing in two steps (live preview).
+ * `pinIds` = limbs held at their pre-edit world spot (captured from the
+ * pre-solve pose, exactly like a drag captures them at pointer-down).
  */
 export function keyEffectorTarget(
   clip: ConvertedClip,
@@ -645,11 +779,19 @@ export function keyEffectorTarget(
   effector: EffectorId,
   f: number,
   target: EffectorTarget,
+  pinIds: EffectorId[] = [],
 ): TimeRange | null {
   const pose = stackPoseThrough(clip, layers, layerIndex, f);
-  const bones = solveEffectorOnPose(pose, clip.names, clip.parents, effector, target);
+  const pins = capturePinTargets(pose, clip.names, clip.parents, pinIds);
+  const bones = solveEffectorOnPose(pose, clip.names, clip.parents, effector, target, pins);
   if (!bones.length) return null;
-  return captureBoneKeys(clip, layers, layerIndex, bones, pose, f, frameTime(clip, f), effector === "hips" && !!target.pos);
+  if (target.rot && (effector === "leftHand" || effector === "rightHand")) {
+    const extra = distributeWristTwist(clip, pose, effector);
+    if (extra && !bones.includes(extra)) bones.push(extra);
+  }
+  // Root rotates about the ground pivot, so it moves the hips POSITION too.
+  const withHipsPos = effector === "root" || (effector === "hips" && !!target.pos);
+  return captureBoneKeys(clip, layers, layerIndex, bones, pose, f, frameTime(clip, f), withHipsPos);
 }
 
 /**
@@ -693,7 +835,8 @@ export function convertLayerMode(
  */
 export function keyFullPose(clip: ConvertedClip, layers: RigLayer[], layerIndex: number, t: number, f: number): void {
   const pose = stackPoseThrough(clip, layers, layerIndex, f);
-  const bones = EFFECTORS.map((e) => e.bone).filter((b) => clip.names.indexOf(b) >= 0);
+  // Dedupe: root aliases the Hips bone.
+  const bones = [...new Set(EFFECTORS.map((e) => e.bone))].filter((b) => clip.names.indexOf(b) >= 0);
   captureBoneKeys(clip, layers, layerIndex, bones, pose, f, t, true);
 }
 

@@ -890,28 +890,24 @@ code {
 }
 
 /* Collapsible (i) explanations */
-.hint-box {
-  margin: 0.2rem 0 0.7rem;
-}
-
-.hint-box summary {
-  cursor: pointer;
+/* Small info glyph next to a heading/control: hover shows the explanation as
+   a native title tooltip, matching the title= rollovers used everywhere else.
+   (Replaced the click-to-expand hint-box that dumped a whole sentence inline.) */
+.hint-i {
+  display: inline-block;
+  margin-left: 0.35em;
   color: var(--text-dim);
-  font-size: 0.75rem;
-  list-style: none;
-  user-select: none;
+  cursor: help;
+  font-size: 0.9rem;
+  line-height: 1;
+  vertical-align: -0.06em;
+  opacity: 0.7;
+  text-transform: none;
 }
 
-.hint-box summary::-webkit-details-marker {
-  display: none;
-}
-
-.hint-box summary:hover {
-  color: var(--text);
-}
-
-.hint-box[open] summary {
-  margin-bottom: 0.2rem;
+.hint-i:hover {
+  color: var(--accent);
+  opacity: 1;
 }
 
 .open-btn {

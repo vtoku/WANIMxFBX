@@ -435,5 +435,85 @@ const f0 = 0;
   }
 }
 
+// ---- pins, root, wrist twist (Poser-style rig behaviors) --------------------
+{
+  const fKey = Math.floor(frames / 2);
+  const mm = (v) => (v * 1000).toFixed(2);
+  const hips = boneI("Hips"), lank = boneI("LeftFoot"), rank = boneI("RightFoot");
+
+  // 1. Pinned feet: dropping the hips 10 cm keeps both feet planted.
+  {
+    const layers = [makeLayer("pin-test")];
+    const w0 = world(c, fKey);
+    const target = [w0.pos[hips][0], w0.pos[hips][1] - 0.1, w0.pos[hips][2]];
+    keyEffectorTarget(c, layers, 0, "hips", fKey, { pos: target }, ["leftFoot", "rightFoot"]);
+    const baked = applyRigLayers(c, layers);
+    const w1 = world(baked, fKey);
+    const drop = w0.pos[hips][1] - w1.pos[hips][1];
+    const feet = Math.max(dist(w0.pos[lank], w1.pos[lank]), dist(w0.pos[rank], w1.pos[rank]));
+    const legKeys = ["LeftUpperLeg", "LeftLowerLeg", "LeftFoot"].every(
+      (b) => layers[0].tracks.some((tr) => tr.bone === b && tr.rotKeys.length));
+    check("pins: hips −10cm with pinned feet — feet stay planted",
+      Math.abs(drop - 0.1) < 0.002 && feet < 0.002 && legKeys,
+      `drop ${mm(drop)}mm, worst foot drift ${mm(feet)}mm, leg keys ${legKeys}`);
+  }
+
+  // 2. Root translate: whole character shifts rigidly.
+  {
+    const layers = [makeLayer("root-move")];
+    const w0 = world(c, fKey);
+    const pivot = [w0.pos[hips][0], 0, w0.pos[hips][2]];
+    keyEffectorTarget(c, layers, 0, "root", fKey, { pos: [pivot[0] + 0.5, 0, pivot[2]] });
+    const w1 = world(applyRigLayers(c, layers), fKey);
+    const dHips = [w1.pos[hips][0] - w0.pos[hips][0], w1.pos[hips][1] - w0.pos[hips][1], w1.pos[hips][2] - w0.pos[hips][2]];
+    const dFoot = [w1.pos[lank][0] - w0.pos[lank][0], w1.pos[lank][1] - w0.pos[lank][1], w1.pos[lank][2] - w0.pos[lank][2]];
+    check("root: +50cm X translates the whole character rigidly",
+      Math.abs(dHips[0] - 0.5) < 0.002 && Math.abs(dHips[1]) < 0.002 &&
+      Math.abs(dFoot[0] - 0.5) < 0.002 && Math.abs(dFoot[1]) < 0.002,
+      `hips Δ(${mm(dHips[0])}, ${mm(dHips[1])})mm foot Δ(${mm(dFoot[0])}, ${mm(dFoot[1])})mm`);
+  }
+
+  // 3. Root yaw 90° about the ground pivot: foot orbits the pivot, height kept.
+  {
+    const layers = [makeLayer("root-yaw")];
+    const w0 = world(c, fKey);
+    const s = Math.sin(Math.PI / 4), w = Math.cos(Math.PI / 4);
+    const yaw90 = [0, s, 0, w]; // +90° about Y
+    keyEffectorTarget(c, layers, 0, "root", fKey, { rot: qmul(yaw90, w0.rot[hips]) });
+    const w1 = world(applyRigLayers(c, layers), fKey);
+    const pivot = [w0.pos[hips][0], 0, w0.pos[hips][2]];
+    // Expected foot position = yaw90 about the pivot.
+    const rel = [w0.pos[lank][0] - pivot[0], w0.pos[lank][1], w0.pos[lank][2] - pivot[2]];
+    const expect = [pivot[0] + rel[2], rel[1], pivot[2] - rel[0]]; // +90° yaw: (x,z)→(z,−x)
+    const err = dist(w1.pos[lank], expect);
+    check("root: 90° yaw orbits the body about the ground pivot", err < 0.003, `foot err ${mm(err)}mm`);
+  }
+
+  // 4. Wrist twist distribution: hand world rotation preserved, forearm turns.
+  {
+    const layers = [makeLayer("twist")];
+    const hand = boneI("RightHand"), fore = boneI("RightLowerArm");
+    const w0 = world(c, fKey);
+    // Twist the hand 60° about its own finger axis (world).
+    const mid = boneI("RightMiddleProximal");
+    const off = mid >= 0 ? c.bindPos[mid] : [-1, 0, 0];
+    const len = Math.hypot(off[0], off[1], off[2]) || 1;
+    const axisWorld = ((q, v) => { // rotate local axis into world
+      const tx = 2 * (q[1] * v[2] - q[2] * v[1]), ty = 2 * (q[2] * v[0] - q[0] * v[2]), tz = 2 * (q[0] * v[1] - q[1] * v[0]);
+      return [v[0] + q[3] * tx + (q[1] * tz - q[2] * ty), v[1] + q[3] * ty + (q[2] * tx - q[0] * tz), v[2] + q[3] * tz + (q[0] * ty - q[1] * tx)];
+    })(w0.rot[hand], [off[0] / len, off[1] / len, off[2] / len]);
+    const a = Math.PI / 3, sn = Math.sin(a / 2);
+    const twistW = [axisWorld[0] * sn, axisWorld[1] * sn, axisWorld[2] * sn, Math.cos(a / 2)];
+    const targetRot = qmul(twistW, w0.rot[hand]);
+    keyEffectorTarget(c, layers, 0, "rightHand", fKey, { rot: targetRot });
+    const w1 = world(applyRigLayers(c, layers), fKey);
+    const handErr = qangle(w1.rot[hand], targetRot);
+    const foreTurn = qangle(w1.rot[fore], w0.rot[fore]);
+    check("wrist twist: hand lands on target, forearm carries its share",
+      handErr < 0.1 && foreTurn > 20,
+      `hand err ${handErr.toFixed(2)}°, forearm turned ${foreTurn.toFixed(1)}° (expect ~36°)`);
+  }
+}
+
 if (failures) { console.error(`${failures} FAILURES`); process.exit(1); }
 console.log("OK");

@@ -8,7 +8,8 @@ import {
   effectorDef, effectorForBone, effectorColor, retimeKeys, keyFullPose,
   bakeRange, bakeRangeAsync, dirtyRange, unionRange, fkDragRef, setKeyEase, reduceKeys,
   stackPoseThrough, belowStackPose, clonePose, solveEffectorOnPose, captureBoneKeys, applyLayersToPose, convertLayerMode,
-  type RigLayer, type EffectorId, type TimeRange, type EffectorTarget,
+  capturePinTargets, distributeWristTwist,
+  type RigLayer, type EffectorId, type TimeRange, type EffectorTarget, type PinTarget,
 } from "./rig/rig.ts";
 import { worldFromLocal, type FramePose } from "./convert/fk.ts";
 import { vsub, vadd, vlen, vnorm, quatFromTo } from "./convert/ik.ts";
@@ -302,9 +303,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     </label>
     <p id="cleanStats" class="clean-stats"></p>
 
-    <h4 class="group">Range smoothing</h4>
-    <details class="hint-box"><summary>ⓘ how this works</summary><p class="hint">Smooth just one rough section: set the timeline trim handles
-      around it, pick a cutoff above, then apply. Blends at the edges.</p></details>
+    <h4 class="group">Range smoothing <span class="hint-i" title="Smooth just one rough section: set the timeline trim handles around it, pick a cutoff above, then apply. Blends at the edges.">ⓘ</span></h4>
     <div class="rig-row">
       <button id="rangeAdd" class="button ghost">Smooth trim range</button>
     </div>
@@ -312,12 +311,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     </div>
 
     <div class="tab" id="tab-rig">
-    <details class="hint-box"><summary>ⓘ how this works</summary><p class="hint">FK/IK adjustment layers, MotionBuilder style. Add a layer, pause,
-      then drag a handle on the figure; a key lands at the playhead. Spheres
-      (hips, hands, feet) move with IK and rotate; the small diamonds on the
-      body bones rotate FK-style. On the timeline: right-click a key for
-      copy/paste/delete, shift-drag to select several, ctrl-click to add one,
-      drag a key to retime it. Edits auto-save for this recording.</p></details>
+    <h4 class="group">Layers <span class="hint-i" title="FK/IK adjustment layers, MotionBuilder style. Add a layer, pause, then drag a handle on the figure; a key lands at the playhead. Spheres (hips, hands, feet) move with IK and rotate; the small diamonds on the body bones rotate FK-style. On the timeline: right-click a key for copy/paste/delete, shift-drag to select several, ctrl-click to add one, drag a key to retime it. Edits auto-save for this recording.">ⓘ</span></h4>
     <div id="rigLayers" class="rig-layers"></div>
     <div class="rig-row">
       <button id="rigAdd" class="button ghost">Add layer</button>
@@ -328,6 +322,10 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     <p id="rigCacheNote" class="clean-stats"></p>
     <div id="rigEditor" hidden>
       <p id="rigSel" class="clean-stats"></p>
+      <div class="rig-row" id="rigLimbRow" hidden>
+        <button id="rigPin" class="button ghost" title="Pin this hand/foot to its spot in the world. While pinned, dragging the hips, root, or body moves everything EXCEPT it — the limb re-solves to stay planted (Poser style).">📌 Pin</button>
+        <button id="rigFkMode" class="button ghost" title="IK: dragging this hand/foot bends the limb to reach it. FK: dragging swings the whole limb rigidly from the shoulder/hip.">Mode: IK</button>
+      </div>
       <div id="rigKeys" class="rig-keys"></div>
       <div class="rig-row">
         <button id="rigNeutral" class="button ghost" title="Keys the selected handle at its unadjusted position at the playhead. Put one before and after an adjustment to keep it local.">Neutral key</button>
@@ -337,10 +335,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       </div>
     </div>
 
-    <h3 class="section">Modifiers</h3>
-    <details class="hint-box"><summary>ⓘ how this works</summary><p class="hint">Whole-clip corrections, no keys needed. Hips keeps the feet
-      planted; knees and elbows swing without moving hips, feet, or hands.
-      Layers apply on top of these.</p></details>
+    <h3 class="section">Modifiers <span class="hint-i" title="Whole-clip corrections, no keys needed. Hips keeps the feet planted; knees and elbows swing without moving hips, feet, or hands. Layers apply on top of these.">ⓘ</span></h3>
     <label class="field sub">
       <span>Hips height <output id="modHipsVal">0 cm</output></span>
       <input id="modHips" type="range" min="-30" max="30" step="1" value="0" title="Raise or lower the hips; the legs re-solve so the feet stay where they are." />
@@ -362,9 +357,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       <input id="modMirror" type="checkbox" title="Swaps left and right across the whole clip (pose and travel). Face stays as recorded." />
     </label>
 
-    <h4 class="group">Reach (pull to raw path)</h4>
-    <details class="hint-box"><summary>ⓘ how this works</summary><p class="hint">Blends each hand/foot back toward where the ORIGINAL recording
-      had it, when cleaning moved it. 0% = cleaned, 100% = raw endpoint path.</p></details>
+    <h4 class="group">Reach (pull to raw path) <span class="hint-i" title="Blends each hand/foot back toward where the ORIGINAL recording had it, when cleaning moved it. 0% = cleaned, 100% = raw endpoint path.">ⓘ</span></h4>
     <label class="field sub">
       <span>L hand <output id="reachLHVal">0%</output></span>
       <input id="reachLH" type="range" min="0" max="100" step="5" value="0" />
@@ -382,9 +375,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       <input id="reachRF" type="range" min="0" max="100" step="5" value="0" />
     </label>
 
-    <h4 class="group">Time warp</h4>
-    <details class="hint-box"><summary>ⓘ how this works</summary><p class="hint">Speed keys ramp playback speed across the clip: slow-mo one
-      section, rush another. The clip's length changes, so trim resets when it does.</p></details>
+    <h4 class="group">Time warp <span class="hint-i" title="Speed keys ramp playback speed across the clip: slow-mo one section, rush another. The clip's length changes, so trim resets when it does.">ⓘ</span></h4>
     <div class="rig-row">
       <select id="warpSpeed" title="Speed at the new key">
         <option value="0.25">0.25×</option>
@@ -454,14 +445,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       </select>
     </label>
     <input id="bodyfile" type="file" accept=".vrm,.glb" hidden />
-    <details class="hint-box"><summary>ⓘ about the formats</summary>
-    <p class="note">Format and Download live in the toolbar. Drag the in/out
-      handles on the timeline to trim. FBX comes out as binary 7.5, which
-      MotionBuilder can read, with the face and body meshes baked in if you
-      turned them on. VRMA carries the humanoid motion and expressions for
-      Warudo, VSeeFace, and Unity; it plays on any VRM and doesn't need a
-      mesh. WANIM writes the cleaned recording back out so you can take it
-      into Warudo again.</p></details>
+    <h4 class="group">Formats <span class="hint-i" title="Format and Download live in the toolbar. Drag the in/out handles on the timeline to trim. FBX comes out as binary 7.5, which MotionBuilder can read, with the face and body meshes baked in if you turned them on. VRMA carries the humanoid motion and expressions for Warudo, VSeeFace, and Unity; it plays on any VRM and doesn't need a mesh. WANIM writes the cleaned recording back out so you can take it into Warudo again.">ⓘ</span></h4>
     </div>
 
     <div class="tab" id="tab-info">
@@ -470,9 +454,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       ${rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")}
     </dl>
     <button id="sceneSave" class="button ghost" title="Bundles the recording plus every edit and setting into one .scene.json. Drop it on the app later to pick up exactly where you left off.">Save scene…</button>
-    <details class="hint-box"><summary>ⓘ how this works</summary><p class="hint">A scene file contains the recording, your layers, modifiers,
-      cleaning and export settings, and the trim. One file reopens the whole
-      session. A custom VRM body is embedded too, so the file is the whole project.</p></details>
+    <span class="hint-i" title="A scene file contains the recording, your layers, modifiers, cleaning and export settings, and the trim. One file reopens the whole session. A custom VRM body is embedded too, so the file is the whole project.">ⓘ</span>
     <button id="reset" class="button ghost">Load another file</button>
     </div>
 
@@ -675,6 +657,10 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   const warpKeys: WarpKey[] = []; // time-warp speed ramp (source-time keys)
   const rangeSmooths: RangeSmooth[] = []; // user-applied range smoothing passes
   let rawRefCache: { gen: number; clip: ConvertedClip } | null = null; // reach reference
+  // Tool state (not undo history — like the gizmo mode): world-pinned limbs
+  // and limbs whose positional drags swing FK instead of solving IK.
+  const pinnedEffectors = new Set<EffectorId>();
+  const fkLimbs = new Set<EffectorId>();
   let ghostOn = false; // grey uncleaned-skeleton overlay
   let cleanMarks: Array<{ time: number; color: string }> = []; // filter tick marks
   /**
@@ -786,7 +772,26 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   const rigEditorEl = document.getElementById("rigEditor") as HTMLDivElement;
   const rigSelEl = document.getElementById("rigSel") as HTMLParagraphElement;
   const rigKeysEl = document.getElementById("rigKeys") as HTMLDivElement;
+  const rigLimbRowEl = document.getElementById("rigLimbRow") as HTMLDivElement;
+  const rigPinBtn = document.getElementById("rigPin") as HTMLButtonElement;
+  const rigFkModeBtn = document.getElementById("rigFkMode") as HTMLButtonElement;
   const rigNeutralBtn = document.getElementById("rigNeutral") as HTMLButtonElement;
+
+  rigPinBtn.addEventListener("click", () => {
+    if (!selectedEffector || !effectorDef(selectedEffector).chain) return;
+    if (pinnedEffectors.has(selectedEffector)) pinnedEffectors.delete(selectedEffector);
+    else pinnedEffectors.add(selectedEffector);
+    preview?.setPinned(pinnedEffectors);
+    saveRigCache();
+    updateRigEditor();
+  });
+  rigFkModeBtn.addEventListener("click", () => {
+    if (!selectedEffector || !effectorDef(selectedEffector).chain) return;
+    if (fkLimbs.has(selectedEffector)) fkLimbs.delete(selectedEffector);
+    else fkLimbs.add(selectedEffector);
+    saveRigCache();
+    updateRigEditor();
+  });
   const rigDelKeyBtn = document.getElementById("rigDelKey") as HTMLButtonElement;
   const rigUndoBtn = document.getElementById("rigUndo") as HTMLButtonElement;
   const rigRedoBtn = document.getElementById("rigRedo") as HTMLButtonElement;
@@ -1288,12 +1293,20 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     if (!selectedEffector) {
       rigSelEl.textContent = "Click a colored handle on the figure to pose it.";
       rigKeysEl.innerHTML = "";
+      rigLimbRowEl.hidden = true;
       return;
     }
     const def = effectorDef(selectedEffector);
+    // Pin + IK/FK controls only exist for two-bone limbs (hands/feet).
+    rigLimbRowEl.hidden = !def.chain;
+    if (def.chain) {
+      rigPinBtn.textContent = pinnedEffectors.has(selectedEffector) ? "📌 Unpin" : "📌 Pin";
+      rigPinBtn.classList.toggle("active", pinnedEffectors.has(selectedEffector));
+      rigFkModeBtn.textContent = fkLimbs.has(selectedEffector) ? "Mode: FK" : "Mode: IK";
+    }
     const track = getTrack(layer, selectedEffector);
     const times = track ? keyTimes(track) : [];
-    rigSelEl.textContent = `${def.label} on ${layer.name} · ${times.length} key${times.length === 1 ? "" : "s"}`;
+    rigSelEl.textContent = `${def.label} on ${layer.name} · ${times.length} key${times.length === 1 ? "" : "s"}${pinnedEffectors.has(selectedEffector) ? " · pinned" : ""}`;
     rigKeysEl.innerHTML = "";
     for (const t of times) {
       const chip = document.createElement("span");
@@ -1521,6 +1534,11 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     startPose: FramePose; // full stack at f, drag baseline
     startWorld: { pos: Vec3; rot: Quat };
     fkRef: { joint: Vec3; tip: Vec3 } | null;
+    /** FK-mode limb drag: swing this chain-root effector instead of IK. */
+    fkLimbAs: EffectorId | null;
+    fkLimbRootRot: Quat | null;
+    /** Pinned limbs' world targets, captured at pointer-down. */
+    pins: PinTarget[];
     solved: FramePose | null;
     bones: string[];
     movedPos: boolean;
@@ -1542,12 +1560,32 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       // must not be absorbed into the captured keys (they apply on top).
       const startPose = stackPoseThrough(rigBaseClip, rigLayers, activeLayerIdx, f);
       const world = worldFromLocal(rigBaseClip.parents, startPose);
-      const b = rigBaseClip.names.indexOf(effectorDef(e).bone);
-      const fkRef = effectorDef(e).canMove ? null : fkDragRef(rigBaseClip, rigLayers, activeLayerIdx, e, f);
+      const def = effectorDef(e);
+      const b = rigBaseClip.names.indexOf(def.bone);
+      let fkRef = def.canMove ? null : fkDragRef(rigBaseClip, rigLayers, activeLayerIdx, e, f);
+      // FK-mode limb: a positional drag swings the WHOLE chain rigidly from
+      // its root joint (shoulder/hip) instead of solving IK.
+      let fkLimbAs: EffectorId | null = null;
+      let fkLimbRootRot: Quat | null = null;
+      if (def.chain && fkLimbs.has(e)) {
+        const chainRoot = effectorForBone(def.chain.root);
+        const rootIdx = rigBaseClip.names.indexOf(def.chain.root);
+        if (chainRoot && rootIdx >= 0) {
+          fkLimbAs = chainRoot.id;
+          fkLimbRootRot = world.rot[rootIdx];
+          fkRef = { joint: world.pos[rootIdx], tip: world.pos[b] };
+        }
+      }
+      // Pins hold their pre-drag world spot for the whole drag (skip the
+      // grabbed limb's own pin — you're allowed to move what you grabbed).
+      const pins = capturePinTargets(
+        startPose, rigBaseClip.names, rigBaseClip.parents,
+        [...pinnedEffectors].filter((p) => p !== e),
+      );
       dragCtx = {
         effector: e, f, t, startPose,
         startWorld: { pos: world.pos[b], rot: world.rot[b] },
-        fkRef, solved: null, bones: [], movedPos: false,
+        fkRef, fkLimbAs, fkLimbRootRot, pins, solved: null, bones: [], movedPos: false,
       };
       return true;
     },
@@ -1557,8 +1595,16 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       const def = effectorDef(dragCtx.effector);
       const posMoved = vlen(vsub(pos, dragCtx.startWorld.pos)) > 1e-5;
       const rotMoved = 1 - Math.abs(quatDot(rot, dragCtx.startWorld.rot)) > 1e-9;
+      let solveAs = dragCtx.effector;
       const target: EffectorTarget = {};
-      if (posMoved && def.canMove) {
+      if (posMoved && dragCtx.fkLimbAs && dragCtx.fkRef && dragCtx.fkLimbRootRot) {
+        // FK limb mode: swing the chain root so the grabbed end chases the drag.
+        solveAs = dragCtx.fkLimbAs;
+        const drag = vsub(pos, dragCtx.startWorld.pos);
+        const dir0 = vnorm(vsub(dragCtx.fkRef.tip, dragCtx.fkRef.joint));
+        const dir1 = vnorm(vsub(vadd(dragCtx.fkRef.tip, drag), dragCtx.fkRef.joint));
+        target.rot = quatNormalize(quatMul(quatFromTo(dir0, dir1), dragCtx.fkLimbRootRot));
+      } else if (posMoved && def.canMove) {
         target.pos = pos;
         dragCtx.movedPos = true;
       } else if (posMoved && dragCtx.fkRef) {
@@ -1573,8 +1619,15 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         return;
       }
       const solved = clonePose(dragCtx.startPose);
-      const bones = solveEffectorOnPose(solved, rigBaseClip.names, rigBaseClip.parents, dragCtx.effector, target);
+      const bones = solveEffectorOnPose(
+        solved, rigBaseClip.names, rigBaseClip.parents, solveAs, target, dragCtx.pins,
+      );
       if (!bones.length) return;
+      // Rotating a wrist sends its anatomical twist share to the forearm.
+      if (target.rot && solveAs === dragCtx.effector && (solveAs === "leftHand" || solveAs === "rightHand")) {
+        const extra = distributeWristTwist(rigBaseClip, solved, solveAs);
+        if (extra && !bones.includes(extra)) bones.push(extra);
+      }
       dragCtx.solved = solved;
       dragCtx.bones = bones;
       // Display = solved + the layers ABOVE the active one, so the live view
@@ -1593,7 +1646,8 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       pushHistory();
       const dirty = captureBoneKeys(
         rigBaseClip, rigLayers, activeLayerIdx, ctx.bones, ctx.solved, ctx.f, ctx.t,
-        ctx.effector === "hips" && ctx.movedPos,
+        // Root rotates about the ground pivot — that moves the hips position.
+        ctx.effector === "root" || (ctx.effector === "hips" && ctx.movedPos),
       );
       rebakeRig(dirty ?? undefined);
       updateRigEditor();
@@ -1601,6 +1655,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   });
 
   renderRigLayers();
+  preview?.setPinned(pinnedEffectors);
 
   // ---- modifiers -----------------------------------------------------------
   const modInputs = [
@@ -1868,6 +1923,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
           rigCacheKey,
           JSON.stringify({
             v: 3, layers: rigLayers, mods, counter: layerCounter, warp: warpKeys, ranges: rangeSmooths,
+            pins: [...pinnedEffectors], fk: [...fkLimbs],
             settings: sceneSettings(),
           }),
         );
@@ -1884,7 +1940,14 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     counter?: number;
     warp?: WarpKey[];
     ranges?: RangeSmooth[];
+    pins?: EffectorId[];
+    fk?: EffectorId[];
   }) {
+    pinnedEffectors.clear();
+    for (const p of d.pins ?? []) pinnedEffectors.add(p);
+    fkLimbs.clear();
+    for (const p of d.fk ?? []) fkLimbs.add(p);
+    preview?.setPinned(pinnedEffectors);
     // v3 moved keys from effector-space to bone-local tracks; older layer
     // keys can't be converted meaningfully — drop them (mods/warp/ranges keep).
     const layers = Array.isArray(d.layers)
@@ -1944,7 +2007,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   (document.getElementById("rigSave") as HTMLButtonElement).addEventListener("click", () => {
     if (!loaded) return;
     const json = JSON.stringify(
-      { v: 3, layers: rigLayers, mods, counter: layerCounter, warp: warpKeys, ranges: rangeSmooths },
+      { v: 3, layers: rigLayers, mods, counter: layerCounter, warp: warpKeys, ranges: rangeSmooths, pins: [...pinnedEffectors], fk: [...fkLimbs] },
       null,
       1,
     );
@@ -2019,7 +2082,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       v: 2,
       name: loaded.name,
       settings: sceneSettings(),
-      rig: { v: 3, layers: rigLayers, mods, counter: layerCounter, warp: warpKeys, ranges: rangeSmooths },
+      rig: { v: 3, layers: rigLayers, mods, counter: layerCounter, warp: warpKeys, ranges: rangeSmooths, pins: [...pinnedEffectors], fk: [...fkLimbs] },
       wanim: bytesToBase64(new Uint8Array(loaded.raw)),
       // Embed the custom body so the project is fully self-contained.
       body: userBodyBytes

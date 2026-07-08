@@ -684,6 +684,14 @@ export class PreviewScene {
     return this.gizmoSpace;
   }
 
+  /** Effectors currently pinned (world-held) — styled solid so state reads. */
+  private rigPinned = new Set<EffectorId>();
+
+  setPinned(ids: Iterable<EffectorId>) {
+    this.rigPinned = new Set(ids);
+    this.restyleHandles();
+  }
+
   /** Handle look for every state: idle/hover/selected, dimmed while dragging. */
   private restyleHandles() {
     const dragging = this.gizmoDragging || !!this.directDrag?.active;
@@ -694,6 +702,10 @@ export class PreviewScene {
       const hov = id === this.rigHovered;
       mat.opacity = dragging ? (sel ? 0.9 : 0.06) : sel ? 0.95 : hov ? 0.85 : movable ? 0.3 : 0.2;
       mesh.scale.setScalar(sel ? 1.3 : hov ? 1.2 : 1);
+      if (this.rigPinned.has(id) && !dragging) {
+        mat.opacity = Math.max(mat.opacity, 0.85);
+        mesh.scale.setScalar(Math.max(sel ? 1.3 : 1.15, mesh.scale.x));
+      }
     }
   }
 
@@ -729,7 +741,8 @@ export class PreviewScene {
     return this.time;
   }
 
-  /** World transform of an effector's bone in the CURRENTLY displayed pose. */
+  /** World transform of an effector's bone in the CURRENTLY displayed pose.
+   *  The root handle lives on the GROUND under the hips (its drag pivot). */
   getEffectorWorld(effector: EffectorId): { pos: Vec3; rot: Quat } | null {
     const def = EFFECTORS.find((e) => e.id === effector);
     const node = def ? this.boneNodes[this.clip?.names.indexOf(def.bone) ?? -1] : null;
@@ -738,6 +751,7 @@ export class PreviewScene {
     const q = new THREE.Quaternion();
     node.getWorldPosition(p);
     node.getWorldQuaternion(q);
+    if (effector === "root") p.y = 0;
     return { pos: [p.x, p.y, p.z], rot: [q.x, q.y, q.z, q.w] };
   }
 
@@ -778,11 +792,15 @@ export class PreviewScene {
     for (const def of EFFECTORS) {
       const bone = this.clip.names.indexOf(def.bone);
       if (bone < 0 || !this.boneNodes[bone]) continue;
-      // IK effectors (movable) are spheres; FK cells are smaller octahedra.
+      // IK effectors (movable) are spheres; FK cells are smaller octahedra;
+      // the root is a flat ring on the ground under the hips.
       // Small and faint so the mesh stays readable; hover brightens them.
-      const geo = def.canMove
-        ? new THREE.SphereGeometry(def.id === "hips" ? 0.034 : 0.024, 16, 12)
-        : new THREE.OctahedronGeometry(0.016);
+      const geo =
+        def.id === "root"
+          ? new THREE.TorusGeometry(0.14, 0.01, 8, 40)
+          : def.canMove
+            ? new THREE.SphereGeometry(def.id === "hips" ? 0.034 : 0.024, 16, 12)
+            : new THREE.OctahedronGeometry(0.016);
       const mesh = new THREE.Mesh(
         geo,
         new THREE.MeshBasicMaterial({
@@ -792,6 +810,7 @@ export class PreviewScene {
           depthTest: false,
         }),
       );
+      if (def.id === "root") mesh.rotation.x = Math.PI / 2; // lie flat on the floor
       mesh.renderOrder = 10;
       mesh.userData.effector = def.id;
       this.scene.add(mesh);
@@ -857,6 +876,7 @@ export class PreviewScene {
       const node = this.boneNodes[this.clip.names.indexOf(def.bone)];
       if (!node) continue;
       node.getWorldPosition(wp);
+      if (id === "root") wp.y = 0; // the trajectory ring stays on the floor
       mesh.position.copy(wp);
     }
     if (!this.gizmoDragging) this.syncProxy();
