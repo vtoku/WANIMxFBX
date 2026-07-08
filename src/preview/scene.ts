@@ -129,9 +129,14 @@ export class PreviewScene {
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     this.scene.environmentIntensity = 0.55;
     pmrem.dispose();
+    // Soft key light: shadowless even fill was half of the "waxy" read —
+    // a gentle direction gives the form light/dark sides again.
+    const key = new THREE.DirectionalLight(0xfff2e0, 1.1);
+    key.position.set(2.5, 3.5, 2.0);
     this.scene.add(
-      new THREE.HemisphereLight(0xffffff, 0x40404c, 0.9),
-      new THREE.AmbientLight(0xffffff, 0.25),
+      key,
+      new THREE.HemisphereLight(0xffffff, 0x40404c, 0.55),
+      new THREE.AmbientLight(0xffffff, 0.15),
     );
     this.scene.add(new THREE.GridHelper(10, 20, 0x2a2f3a, 0x1b1f27));
 
