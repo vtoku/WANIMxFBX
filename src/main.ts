@@ -2031,7 +2031,12 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   (document.getElementById("sceneSave") as HTMLButtonElement).addEventListener("click", saveScene);
 
   function wireTransportScene() {
-    transport?.setSceneActions({ save: saveScene, open: () => fileInput.click() });
+    transport?.setSceneActions({
+      save: saveScene,
+      // Filter the shared input per button; the change handler resets it.
+      openWanim: () => { fileInput.accept = ".wanim"; fileInput.click(); },
+      openScene: () => { fileInput.accept = ".json,application/json"; fileInput.click(); },
+    });
   }
   wireTransportScene();
 
@@ -2267,6 +2272,10 @@ fileInput.addEventListener("change", () => {
   const file = fileInput.files?.[0];
   if (file) void handleFile(file);
   fileInput.value = "";
+  fileInput.accept = ".wanim,.json"; // undo any per-button filter
+});
+fileInput.addEventListener("cancel", () => {
+  fileInput.accept = ".wanim,.json";
 });
 
 for (const evt of ["dragover", "dragenter"] as const) {

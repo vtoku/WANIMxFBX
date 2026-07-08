@@ -44,8 +44,8 @@ export interface Transport {
   getTrim(): { start: number; end: number };
   /** Restore a trim range (scene load). */
   setTrim(start: number, end: number): void;
-  /** Wire the Save…/Open… buttons (scene handling lives in the app). */
-  setSceneActions(cbs: { save(): void; open(): void }): void;
+  /** Wire the Load/Save buttons (scene handling lives in the app). */
+  setSceneActions(cbs: { save(): void; openWanim(): void; openScene(): void }): void;
   /** Show rig-layer key markers on the timeline (replaces the previous set). */
   setKeys(markers: TransportKeyMarker[], cbs?: TransportKeyCallbacks): void;
   /** Correction tick marks along the strip bottom (replaces the previous set). */
@@ -79,8 +79,9 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
   el.innerHTML = `
     <div class="t-main">
       <span class="t-file">
-        <button class="t-btn t-ico t-scene-open" title="Load a .wanim recording or a saved .scene.json">${ICONS.load}<span>Load</span></button>
-        <button class="t-btn t-ico t-scene-save" title="Save the whole session (recording + edits + settings) as a scene file">${ICONS.save}<span>Save</span></button>
+        <button class="t-btn t-ico t-load-wanim" title="Load a .wanim recording">${ICONS.load}<span>Load .wanim</span></button>
+        <button class="t-btn t-ico t-load-scene" title="Load a saved .scene.json session">${ICONS.load}<span>Load scene</span></button>
+        <button class="t-btn t-ico t-scene-save" title="Save the whole session (recording + edits + settings) as a scene file">${ICONS.save}<span>Save scene</span></button>
       </span>
       <button class="t-btn t-ico t-play" aria-label="Play/pause" title="Play/pause (Space). ←/→ step a frame, shift for 10.">${ICONS.pause}</button>
       <select class="t-rate" title="Playback speed (review only — doesn't change the clip)">
@@ -418,7 +419,8 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
     },
     setSceneActions: (cbs) => {
       (el.querySelector(".t-scene-save") as HTMLButtonElement).onclick = () => cbs.save();
-      (el.querySelector(".t-scene-open") as HTMLButtonElement).onclick = () => cbs.open();
+      (el.querySelector(".t-load-wanim") as HTMLButtonElement).onclick = () => cbs.openWanim();
+      (el.querySelector(".t-load-scene") as HTMLButtonElement).onclick = () => cbs.openScene();
     },
     setKeys,
     setMarks,

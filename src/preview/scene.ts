@@ -15,6 +15,8 @@ import { FaceOverlay } from "./face.ts";
 import { BODY_HEAD_HEIGHT_M, BODY_HEAD_LIFT_M, BODY_HEAD_JOINT_Y } from "../convert/meshExport.ts";
 
 const BG = 0x0e1014;
+/** DIO's green — the ghost overlay's identity color (fill, rim, lines). */
+const GHOST_GREEN = 0x3fd97a;
 
 export interface PlaybackState {
   time: number;
@@ -64,7 +66,7 @@ export class PreviewScene {
   private ghostLines: THREE.LineSegments | null = null;
   private ghostLinks: Array<[number, number]> = [];
   private ghostBody: THREE.Group | null = null;
-  private ghostMat: THREE.Material | null = null;
+  private ghostMats: THREE.Material[] = [];
 
   private face: FaceOverlay | null = null;
   private headIndex = -1;
@@ -505,7 +507,7 @@ export class PreviewScene {
     this.ghostLines = new THREE.LineSegments(
       geo,
       // Overlay like the ghost body: always visible, never z-fighting.
-      new THREE.LineBasicMaterial({ color: 0x8a8f9a, transparent: true, opacity: 0.4, depthTest: false, depthWrite: false }),
+      new THREE.LineBasicMaterial({ color: GHOST_GREEN, transparent: true, opacity: 0.35, depthTest: false, depthWrite: false }),
     );
     this.ghostLines.renderOrder = 8;
     this.ghostLines.frustumCulled = false;
@@ -531,24 +533,69 @@ export class PreviewScene {
         // silhouette only (textures/lighting would read as a second person).
         // A true OVERLAY: no depth test, drawn after the body — coplanar
         // surfaces would otherwise z-fight whenever the poses coincide.
-        const mat = new THREE.MeshBasicMaterial({
-          color: 0x9fb6d8,
+        // Faint fill: with no depth test every surface layer stacks, so the
+        // opacity must be tiny — the RIM outline carries the ghost's identity.
+        const fill = new THREE.MeshBasicMaterial({
+          color: GHOST_GREEN,
           transparent: true,
-          opacity: 0.14,
+          opacity: 0.045,
           depthWrite: false,
           depthTest: false,
-          side: THREE.DoubleSide,
+          side: THREE.FrontSide,
+        });
+        // Rim outline: fresnel — opaque at the silhouette from ANY view,
+        // transparent face-on. (An inverted hull can't do this without depth
+        // testing: with depth off, BackSide shows the whole far surface.)
+        const outline = new THREE.ShaderMaterial({
+          transparent: true,
+          depthTest: false,
+          depthWrite: false,
+          uniforms: {
+            rimColor: { value: new THREE.Color(GHOST_GREEN) },
+            rimOpacity: { value: 0.9 },
+          },
+          vertexShader: /* glsl */ `
+            #include <common>
+            #include <skinning_pars_vertex>
+            varying float vRim;
+            void main() {
+              #include <skinbase_vertex>
+              #include <beginnormal_vertex>
+              #include <skinnormal_vertex>
+              #include <begin_vertex>
+              #include <skinning_vertex>
+              #include <project_vertex>
+              vec3 vn = normalize(normalMatrix * objectNormal);
+              vec3 vv = normalize(-mvPosition.xyz);
+              vRim = pow(1.0 - abs(dot(vn, vv)), 2.5);
+            }`,
+          fragmentShader: /* glsl */ `
+            uniform vec3 rimColor;
+            uniform float rimOpacity;
+            varying float vRim;
+            void main() {
+              gl_FragColor = vec4(rimColor, rimOpacity * vRim);
+            }`,
         });
         const orphaned = new Set<THREE.Material>();
+        const shells: THREE.SkinnedMesh[] = [];
         group.traverse((o) => {
-          const mesh = o as THREE.Mesh;
+          const mesh = o as THREE.SkinnedMesh;
           if (!mesh.isMesh) return;
           orphaned.add(mesh.material as THREE.Material);
-          mesh.material = mat;
+          mesh.material = fill;
           mesh.renderOrder = 8; // above the scene, below rig handles (10) / gizmo (20)
+          if (mesh.isSkinnedMesh) {
+            const shell = new THREE.SkinnedMesh(mesh.geometry, outline);
+            shell.bind(mesh.skeleton, mesh.bindMatrix);
+            shell.frustumCulled = false;
+            shell.renderOrder = 9; // the rim draws over the fill
+            shells.push(shell);
+          }
         });
+        for (const shell of shells) group.add(shell);
         for (const m of orphaned) m.dispose();
-        this.ghostMat = mat;
+        this.ghostMats = [fill, outline];
         this.ghostBody = group;
         this.scene.add(group);
         this.updateGhost(this.time);
@@ -565,8 +612,8 @@ export class PreviewScene {
       });
       this.ghostBody = null;
     }
-    this.ghostMat?.dispose();
-    this.ghostMat = null;
+    for (const m of this.ghostMats) m.dispose();
+    this.ghostMats = [];
   }
 
   private updateGhost(time: number) {
