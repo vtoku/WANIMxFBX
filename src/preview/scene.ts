@@ -53,14 +53,17 @@ export class PreviewScene {
   private lines: THREE.LineSegments | null = null;
   private joints: THREE.Points | null = null;
 
-  // Ghost overlay: a second, grey stick figure playing a reference clip (the
-  // uncleaned recording) in lockstep — the "before" is visible WHILE editing.
-  // Independent of the main clip so recleans don't tear it down.
+  // Ghost overlay: a second, grey stick figure + translucent body mesh
+  // playing a reference clip (the uncleaned recording) in lockstep — the
+  // "before" is visible WHILE editing. Independent of the main clip so
+  // recleans don't tear it down.
   private ghostClip: ConvertedClip | null = null;
   private ghostNodes: THREE.Bone[] = [];
   private ghostRoot: THREE.Group | null = null;
   private ghostLines: THREE.LineSegments | null = null;
   private ghostLinks: Array<[number, number]> = [];
+  private ghostBody: THREE.Group | null = null;
+  private ghostMat: THREE.Material | null = null;
 
   private face: FaceOverlay | null = null;
   private headIndex = -1;
@@ -190,11 +193,13 @@ export class PreviewScene {
     if (this.bodyMode === mode) return;
     this.bodyMode = mode;
     if (this.clip) this.attachBody(this.clip);
+    if (this.ghostClip) this.attachGhostBody(this.ghostClip);
   }
 
   /** Rebuild the body mesh (e.g. after the body source changed). */
   refreshBody() {
     if (this.clip) this.attachBody(this.clip);
+    if (this.ghostClip) this.attachGhostBody(this.ghostClip);
   }
 
   private faceVisible = true;
@@ -488,7 +493,59 @@ export class PreviewScene {
     );
     this.ghostLines.frustumCulled = false;
     this.scene.add(this.ghostLines);
+    this.attachGhostBody(clip);
     this.updateGhost(this.time);
+  }
+
+  /** Translucent body mesh skinned to the GHOST skeleton (same builder as
+   *  the main body, materials swapped for one flat ghost material). */
+  private attachGhostBody(clip: ConvertedClip) {
+    this.clearGhostBody();
+    if (this.bodyMode === "none") return;
+    const nodes = this.ghostNodes;
+    const bindWorld = bindWorldPositions(clip.parents, clip.bindPos);
+    void buildBodyData(clip.parents, clip.bindPos, clip.names)
+      .then((data) => {
+        // The ghost may have changed/cleared while the body data loaded.
+        if (this.ghostClip !== clip || this.ghostNodes !== nodes || this.bodyMode !== "human") return;
+        this.clearGhostBody();
+        const group = buildBodyMeshes(data.meshes, nodes, bindWorld);
+        // One flat, unlit, translucent material for the whole ghost —
+        // silhouette only (textures/lighting would read as a second person).
+        const mat = new THREE.MeshBasicMaterial({
+          color: 0x9fb6d8,
+          transparent: true,
+          opacity: 0.16,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        });
+        const orphaned = new Set<THREE.Material>();
+        group.traverse((o) => {
+          const mesh = o as THREE.Mesh;
+          if (!mesh.isMesh) return;
+          orphaned.add(mesh.material as THREE.Material);
+          mesh.material = mat;
+        });
+        for (const m of orphaned) m.dispose();
+        this.ghostMat = mat;
+        this.ghostBody = group;
+        this.scene.add(group);
+        this.updateGhost(this.time);
+      })
+      .catch((err) => console.warn("ghost body unavailable:", err));
+  }
+
+  private clearGhostBody() {
+    if (this.ghostBody) {
+      this.scene.remove(this.ghostBody);
+      this.ghostBody.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (mesh.geometry) mesh.geometry.dispose();
+      });
+      this.ghostBody = null;
+    }
+    this.ghostMat?.dispose();
+    this.ghostMat = null;
   }
 
   private updateGhost(time: number) {
@@ -507,6 +564,7 @@ export class PreviewScene {
   }
 
   private clearGhost() {
+    this.clearGhostBody();
     if (this.ghostRoot) {
       this.scene.remove(this.ghostRoot);
       this.ghostRoot = null;
