@@ -140,7 +140,7 @@ export function writeVrma(clip: ResampledClip, face?: FaceTracks): Uint8Array {
   // ---- assemble GLB -------------------------------------------------------
   const binLength = byteOffset;
   const json = {
-    asset: { version: "2.0", generator: "WANIMxFBX" },
+    asset: { version: "2.0", generator: "WRYAnimator" },
     extensionsUsed: ["VRMC_vrm_animation"],
     scene: 0,
     scenes: [{ nodes: sceneRoots }],

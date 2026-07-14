@@ -8,7 +8,7 @@ A **client-side web app** that converts a **Warudo `.wanim` animation recording*
 
 This is a **sibling of [VRMxShogun](https://github.com/vtoku/VRMxShogun)** (local checkout: `C:\Users\VTOKU\Documents\Claude\VRM2VICON`). That repo is the architectural template: same stack, same Pages deployment, same hand-rolled ASCII FBX writer approach. Read its `CLAUDE.md` and `SPEC.md` before working here — especially the FBX writer (`src/fbx/asciiFbx.ts`) and the drag-drop/preview UI (`src/main.ts`, `src/preview/scene.ts`), which can be adapted heavily.
 
-Hosted on **GitHub Pages** at `https://vtoku.github.io/WANIMxFBX/` (repo `vtoku/WANIMxFBX`, an org repo; deploys from the `main` branch via Actions). Pages is **static hosting — there is no backend**. WANIM parse, decompression, FBX generation, and download all run **in the browser**. Never add a server-side step.
+Hosted on **GitHub Pages** at the custom domain `https://wryanimator.com/` (repo `vtoku/WRYAnimator`, renamed from `WANIMxFBX` — the local folder keeps the old name; deploys from the `main` branch via Actions). Pages is **static hosting — there is no backend**. WANIM parse, decompression, FBX generation, and download all run **in the browser**. Never add a server-side step.
 
 **Key difference from VRMxShogun:** that tool exports a static skeleton+mesh (no animation); this tool exports **animation** (FBX `AnimationStack`/`AnimationLayer`/`AnimationCurveNode`/`AnimationCurve` sections, which the template's writer does not have — they are the main new work).
 
@@ -234,7 +234,7 @@ Shared/support modules not in the pipeline diagram above: `src/convert/ik.ts` (v
 
 ## GitHub Pages deployment (same traps as VRMxShogun)
 
-- `base: '/WANIMxFBX/'` in `vite.config.ts` — with default `base: '/'` assets 404 in production but work in dev. Validate with `npm run preview`.
+- `base: '/'` in `vite.config.ts` — the site serves at the ROOT of the custom domain `wryanimator.com` (`public/CNAME`). If the custom domain ever goes away, the site falls back to `vtoku.github.io/WRYAnimator/` and base must become `'/WRYAnimator/'` or every asset 404s. Validate with `npm run preview`.
 - Ship `public/.nojekyll`.
 - Deploy via GitHub Actions workflow (`actions/deploy-pages`), Pages source = "GitHub Actions". Copy the template's `.github/workflows/`. Don't hand-manage a `gh-pages` branch.
 

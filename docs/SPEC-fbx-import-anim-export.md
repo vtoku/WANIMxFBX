@@ -5,7 +5,7 @@ Target workflow (round trip through MotionBuilder):
 ```
 .wanim + your VRM  →  FBX export            (exists today, v0.14)
         ↓ animation cleanup in MotionBuilder
-cleaned FBX  →  drop back into WANIMxFBX    (NEW: FBX import)
+cleaned FBX  →  drop back into WRYAnimator  (NEW: FBX import)
         ↓
 humanoid .anim with blendshapes             (NEW: Unity/Warudo export)
 ```

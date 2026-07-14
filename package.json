@@ -1,9 +1,9 @@
 {
-  "name": "wanim-to-fbx",
+  "name": "wryanimator",
   "private": true,
   "version": "0.31.1",
   "type": "module",
-  "description": "Browser-based Warudo .wanim to FBX animation converter. Runs entirely client-side.",
+  "description": "WRYAnimator: edit and clean up Warudo motion-capture recordings in your browser, then export FBX, VRMA, or wanim. Runs entirely client-side.",
   "license": "MIT",
   "scripts": {
     "dev": "vite",
