@@ -1142,6 +1142,11 @@ code {
   opacity: 1;
 }
 
+/* Preferences: master switch for the (i) hint tooltips. */
+.hide-hints .hint-i {
+  display: none;
+}
+
 .open-btn {
   width: auto;
   padding: 0.6rem 1.6rem;

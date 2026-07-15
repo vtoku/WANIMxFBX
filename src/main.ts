@@ -35,7 +35,8 @@ import { saveLastSession, loadLastSession, clearLastSession } from "./session.ts
 import { ICONS } from "./ui/icons.ts";
 import { buildMenuBar, type MenuDef, type MenuItem } from "./ui/menu.ts";
 import { keyFor, SHORTCUTS } from "./ui/shortcuts.ts";
-import { openShortcuts, openAbout } from "./ui/dialogs.ts";
+import { openShortcuts, openAbout, openPreferences as openPreferencesDialog } from "./ui/dialogs.ts";
+import { getPref, applyAppearance } from "./ui/prefs.ts";
 
 const emptyState = document.getElementById("empty-state") as HTMLElement; // dim prompt over the viewport grid
 const menubarEl = document.getElementById("menubar") as HTMLElement;
@@ -161,9 +162,9 @@ const APP_VERSION = document.querySelector(".version")?.textContent?.trim() ?? "
 function openRecordingPicker() { fileInput.accept = ".wanim"; fileInput.click(); }
 function openScenePicker() { fileInput.accept = ".json,application/json"; fileInput.click(); }
 
+const openPreferences = openPreferencesDialog;
 // Reassigned by later feature modules (kept as `let` so the menu, which reads
 // them lazily each open, always sees the live implementation).
-let openPreferences: () => void = () => {};
 let applyLayoutPreset: (p: "default" | "cleanup" | "rig") => void = () => {};
 let recentSupported: () => boolean = () => false;
 let recentSubmenu: () => MenuItem[] = () => [];
@@ -233,6 +234,7 @@ const menuDefs: MenuDef[] = [
     ],
   },
 ];
+applyAppearance(); // UI scale + hint visibility from saved prefs
 buildMenuBar(menubarEl, menuDefs);
 // Test hook: bootcheck asserts every table entry shows in the Help overlay.
 (window as unknown as { __shortcuts?: typeof SHORTCUTS }).__shortcuts = SHORTCUTS;
@@ -798,6 +800,20 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   const limitLowerArmsChk = document.getElementById("limitLowerArms") as HTMLInputElement;
   const lockLowerArmSel = document.getElementById("lockLowerArmTwist") as HTMLSelectElement;
   const fixFeetChk = document.getElementById("fixFeet") as HTMLInputElement;
+
+  // Preference defaults for a NEW session: these seed the baseline before the
+  // per-recording cache / scene restore (which runs later and overrides them),
+  // so an already-edited recording never gets retroactively reset.
+  fpsSel.value = String(getPref("exportFps"));
+  namesSel.value = getPref("nameScheme");
+  restSel.value = getPref("restPose");
+  despikeChk.checked = getPref("cleanDespike");
+  smoothChk.checked = getPref("cleanSmooth");
+  limitWristsChk.checked = getPref("cleanLimitWrists");
+  limitLowerArmsChk.checked = getPref("cleanLimitForearm");
+  fixFeetChk.checked = getPref("cleanFixFeet");
+  transport?.setMagnet(getPref("snapMagnet"));
+
   // Declared here (not with the rest of the edit state) so cleanOpts, which is
   // called synchronously while seeding prevPipelineJson, can reference it.
   const feetPlantRemoved: PlantSpan[] = []; // user-removed foot plants (scene state)
@@ -1820,7 +1836,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   rigSpaceBtn.addEventListener("click", () => {
     setGizmoSpaceUi(preview?.getGizmoSpace() === "local" ? "world" : "local");
   });
-  setGizmoSpaceUi("local"); // bone-aligned rings by default — world axes rarely match a limb
+  setGizmoSpaceUi(getPref("gizmoSpace")); // default from prefs (bone-aligned unless overridden)
 
   rigNeutralBtn.addEventListener("click", () => {
     const layer = rigLayers[activeLayerIdx];
@@ -2468,6 +2484,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   const rigCacheNote = document.getElementById("rigCacheNote") as HTMLParagraphElement;
 
   function saveRigCache() {
+    if (!getPref("autosave")) return; // preference: don't persist edits
     try {
       const dirty =
         rigLayers.length ||
@@ -2904,6 +2921,12 @@ let userOpenedFile = false;
 let restoredSessionName: string | null = null;
 
 async function handleFile(file: File) {
+  // Preference: confirm before dropping the current session for a new file
+  // (edits stay cached per recording, so nothing is truly lost).
+  if (loaded && getPref("confirmReplace") &&
+      !window.confirm("Open a different file? Your edits stay saved for the current recording.")) {
+    return;
+  }
   userOpenedFile = true;
   errorEl.hidden = true;
   const lower = file.name.toLowerCase();
@@ -2944,6 +2967,7 @@ async function loadWanim(name: string, raw: ArrayBuffer, fromRestore = false) {
 
     if (!preview) preview = new PreviewScene(viewport);
     (window as unknown as { __preview?: PreviewScene }).__preview = preview; // test hook
+    preview.setRate(getPref("playbackRate")); // review speed default from prefs
     preview.setClip(converted);
 
     transport?.dispose();

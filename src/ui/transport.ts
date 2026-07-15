@@ -62,6 +62,8 @@ export interface Transport {
   onMarkersChange(fn: (markers: Marker[]) => void): void;
   /** Whether snap-to-key magnet is on (key drags read this). */
   isMagnet(): boolean;
+  /** Set the snap-to-key magnet (prefs default on load). */
+  setMagnet(on: boolean): void;
   /** Cycle the under-strip panel: keys -> curves -> hidden (View menu). */
   cyclePanel(): void;
   /** Force a specific under-strip panel (layout presets). */
@@ -634,6 +636,7 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
     setMarkers: (m) => { markers = m.slice().sort((a, b) => a.time - b.time); drawMarks(); },
     onMarkersChange: (fn) => { markersCb = fn; },
     isMagnet: () => magnet,
+    setMagnet: (on) => { magnet = on; magnetBtn.classList.toggle("active", on); },
     cyclePanel,
     setPanelView,
     setKeys,
