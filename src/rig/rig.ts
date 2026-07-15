@@ -135,6 +135,23 @@ export type IkfkBlend = Record<IkfkLimb, number>;
 
 export const defaultIkfkBlend = (): IkfkBlend => ({ leftArm: 1, rightArm: 1, leftLeg: 1, rightLeg: 1 });
 
+/**
+ * Bones of the whole body part an effector belongs to (its chain + FK
+ * segments) — the "Body part" keying scope. Arms → shoulder…hand, legs →
+ * thigh…toes, everything else → the spine column. Absent bones are dropped.
+ */
+export function bodyPartBones(names: string[], id: EffectorId): string[] {
+  const bone = effectorDef(id).bone;
+  const side = bone.startsWith("Left") ? "Left" : bone.startsWith("Right") ? "Right" : "";
+  const isArm = /Shoulder|UpperArm|LowerArm|Hand|Thumb|Index|Middle|Ring|Little/.test(bone);
+  const isLeg = /UpperLeg|LowerLeg|Foot|Toes/.test(bone);
+  let group: string[];
+  if (side && isArm) group = [`${side}Shoulder`, `${side}UpperArm`, `${side}LowerArm`, `${side}Hand`];
+  else if (side && isLeg) group = [`${side}UpperLeg`, `${side}LowerLeg`, `${side}Foot`, `${side}Toes`];
+  else group = ["Hips", "Spine", "Chest", "UpperChest", "Neck", "Head"];
+  return group.filter((b) => names.includes(b));
+}
+
 /** The IK/FK limb an end-effector belongs to (null = not a blendable limb). */
 export function limbForEffector(id: EffectorId): IkfkLimb | null {
   if (id === "leftHand") return "leftArm";

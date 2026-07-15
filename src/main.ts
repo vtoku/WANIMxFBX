@@ -10,7 +10,7 @@ import {
   bakeRange, bakeRangeAsync, dirtyRange, unionRange, fkDragRef, setKeyEase, reduceKeys,
   stackPoseThrough, belowStackPose, clonePose, solveEffectorOnPose, captureBoneKeys, applyLayersToPose, convertLayerMode,
   capturePinTargets, distributeWristTwist,
-  defaultIkfkBlend, limbForEffector, blendChainToFK, solvePoleOnPose,
+  defaultIkfkBlend, limbForEffector, blendChainToFK, solvePoleOnPose, bodyPartBones,
   type RigLayer, type EffectorId, type TimeRange, type EffectorTarget, type PinTarget, type IkfkBlend,
 } from "./rig/rig.ts";
 import { keyHandPose, applyHandPose, hasHandFingers, type HandSide, type HandPoseAmounts } from "./rig/hands.ts";
@@ -493,8 +493,19 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       </div>
       <div id="rigKeys" class="rig-keys"></div>
       <div class="rig-row">
+        <select id="keyMode" title="What 'Key pose' writes: just the selected handle, its whole limb, or the entire body.">
+          <option value="selected">Selected</option>
+          <option value="bodypart">Body part</option>
+          <option value="full" selected>Full body</option>
+        </select>
+        <label class="field" style="margin:0;gap:4px" title="When on, every handle drag also keys the whole body at that frame (MoBu auto-key). Off by default so cleanup keys stay local.">
+          <span>Auto-key</span>
+          <input id="autoKey" type="checkbox" />
+        </label>
+      </div>
+      <div class="rig-row">
         <button id="rigNeutral" class="button ghost" title="Keys the selected handle at its unadjusted position at the playhead. Put one before and after an adjustment to keep it local.">Neutral key</button>
-        <button id="rigKeyAll" class="button ghost" title="Keys every handle at the playhead, locking the whole pose at this moment so edits elsewhere can't disturb it.">Key pose</button>
+        <button id="rigKeyAll" class="button ghost" title="Keys the selected handle, its limb, or the whole body (per the mode) at the playhead, locking that pose so edits elsewhere can't disturb it.">Key pose</button>
         <button id="rigDelKey" class="button ghost" title="Removes the selected handle's key nearest the playhead.">Delete key</button>
         <button id="rigReduce" class="button ghost" title="Drops keys on the selected handle that the curve wouldn't miss (within 0.5 cm / 1°).">Reduce keys</button>
       </div>
@@ -1875,12 +1886,31 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     updateRigEditor();
   });
 
+  const keyModeSel = document.getElementById("keyMode") as HTMLSelectElement;
+  const autoKeyChk = document.getElementById("autoKey") as HTMLInputElement;
+
+  /** Key the current pose at frame f per the active keying mode. */
+  function keyPoseByMode(f: number, t: number) {
+    if (!rigBaseClip) return;
+    const mode = keyModeSel.value;
+    if (mode === "full" || !selectedEffector) {
+      keyFullPose(rigBaseClip, rigLayers, activeLayerIdx, t, f);
+      return;
+    }
+    const def = effectorDef(selectedEffector);
+    const bones = mode === "bodypart"
+      ? bodyPartBones(rigBaseClip.names, selectedEffector)
+      : def.chain ? [def.chain.root, def.chain.mid, def.bone] : [def.bone];
+    const pose = stackPoseThrough(rigBaseClip, rigLayers, activeLayerIdx, f);
+    captureBoneKeys(rigBaseClip, rigLayers, activeLayerIdx, bones, pose, f, t, bones.includes("Hips"));
+  }
+
   (document.getElementById("rigKeyAll") as HTMLButtonElement).addEventListener("click", () => {
     const layer = rigLayers[activeLayerIdx];
     if (!layer || !rigBaseClip || !preview) return;
     const t = preview.getTime();
     pushHistory();
-    keyFullPose(rigBaseClip, rigLayers, activeLayerIdx, t, nearestFrame(rigBaseClip, t));
+    keyPoseByMode(nearestFrame(rigBaseClip, t), t);
     rebakeRig();
     updateRigEditor();
   });
@@ -2050,7 +2080,8 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         // Root rotates about the ground pivot — that moves the hips position.
         ctx.effector === "root" || (ctx.effector === "hips" && ctx.movedPos),
       );
-      rebakeRig(dirty ?? undefined);
+      if (autoKeyChk.checked) { keyFullPose(rigBaseClip, rigLayers, activeLayerIdx, ctx.t, ctx.f); rebakeRig(); }
+      else rebakeRig(dirty ?? undefined);
       updateRigEditor();
     },
     onPoleStart: (e) => {
@@ -2083,7 +2114,8 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       if (!layer || !ctx.solved || !ctx.bones.length || !rigBaseClip) return;
       pushHistory();
       const dirty = captureBoneKeys(rigBaseClip, rigLayers, activeLayerIdx, ctx.bones, ctx.solved, ctx.f, ctx.t);
-      rebakeRig(dirty ?? undefined);
+      if (autoKeyChk.checked) { keyFullPose(rigBaseClip, rigLayers, activeLayerIdx, ctx.t, ctx.f); rebakeRig(); }
+      else rebakeRig(dirty ?? undefined);
       updateRigEditor();
     },
     onContext: (e, x, y) => {

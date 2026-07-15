@@ -620,5 +620,21 @@ const f0 = 0;
   }
 }
 
+// ---- keying modes: body-part scope keys the limb group, nothing else ----------
+{
+  const { bodyPartBones } = await import("../src/rig/rig.ts");
+  const layer = makeLayer("bodypart");
+  layer.extent = "hold";
+  const layers = [layer];
+  const fB = nearestFrame(c, 6);
+  const bones = bodyPartBones(c.names, "rightHand");
+  const pose = fullStackPose(c, layers, fB);
+  captureBoneKeys(c, layers, 0, bones, pose, fB, c.times[fB] - c.times[0]);
+  const got = layer.tracks.map((t) => t.bone).sort();
+  const want = ["RightShoulder", "RightUpperArm", "RightLowerArm", "RightHand"].filter((b) => boneI(b) >= 0).sort();
+  check("keying mode: body part keys exactly the right-arm chain",
+    JSON.stringify(got) === JSON.stringify(want), `keyed [${got.join(",")}]`);
+}
+
 if (failures) { console.error(`${failures} FAILURES`); process.exit(1); }
 console.log("OK");
