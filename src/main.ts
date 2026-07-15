@@ -34,12 +34,11 @@ import type { Marker } from "./ui/timemap.ts";
 import { saveLastSession, loadLastSession, clearLastSession } from "./session.ts";
 import { ICONS } from "./ui/icons.ts";
 import { buildMenuBar, type MenuDef, type MenuItem } from "./ui/menu.ts";
-import { keyFor } from "./ui/shortcuts.ts";
+import { keyFor, SHORTCUTS } from "./ui/shortcuts.ts";
 import { openShortcuts, openAbout } from "./ui/dialogs.ts";
 
-const emptyState = document.getElementById("empty-state") as HTMLElement; // drop-prompt overlay in the viewport
+const emptyState = document.getElementById("empty-state") as HTMLElement; // dim prompt over the viewport grid
 const menubarEl = document.getElementById("menubar") as HTMLElement;
-const dropzone = document.getElementById("dropzone") as HTMLElement | null;
 const fileInput = document.getElementById("file-input") as HTMLInputElement;
 const errorEl = document.getElementById("empty-error") as HTMLElement;
 const viewport = document.getElementById("viewport") as HTMLElement;
@@ -235,6 +234,8 @@ const menuDefs: MenuDef[] = [
   },
 ];
 buildMenuBar(menubarEl, menuDefs);
+// Test hook: bootcheck asserts every table entry shows in the Help overlay.
+(window as unknown as { __shortcuts?: typeof SHORTCUTS }).__shortcuts = SHORTCUTS;
 
 // ---- scene files ------------------------------------------------------------
 // A scene bundles the RECORDING plus every edit and setting into one JSON, so
@@ -2847,9 +2848,11 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
 }
 
 /**
- * The editor with no recording: viewport grid + drop prompt overlay,
- * placeholder toolbar/dock with Open… entry points. Both the boot state and
- * where "Load another file" returns to.
+ * The editor with no recording (boot state and where "Load another file"
+ * returns): the viewport grid is orbitable behind a single dim prompt line,
+ * the dock shows its four tabs each with an empty note, and the transport is a
+ * disabled placeholder. Everything is opened from the File menu / Ctrl+O / a
+ * drop, so there's no button here.
  */
 function showEmptyEditor() {
   loaded = null;
@@ -2860,24 +2863,39 @@ function showEmptyEditor() {
   transport = null;
   preview?.clear();
   emptyState.hidden = false;
-  editbar.innerHTML = `
-    <span class="eb-hint">No recording loaded</span>
-    <span class="eb-spacer"></span>
-    <button id="ebOpen" class="eb-btn">Open…</button>
-  `;
-  (document.getElementById("ebOpen") as HTMLButtonElement).addEventListener("click", () => fileInput.click());
+  editbar.innerHTML = `<span class="eb-hint">No recording loaded — open one from File, or press Ctrl+O</span>`;
+  const emptyTabs: [string, string, string][] = [
+    ["clean", "Clean", "Open a recording to clean up its motion."],
+    ["rig", "Rig", "Open a recording to pose and layer edits."],
+    ["export", "Export", "Open a recording to export FBX, VRMA, or wanim."],
+    ["info", "Info", "Open a <code>.wanim</code> recording or a saved <code>.scene.json</code>."],
+  ];
   dock.innerHTML = `
+    <nav class="dock-tabs" role="tablist">
+      ${emptyTabs.map(([id, label], i) => `<button class="dock-tab${i === 0 ? " active" : ""}" data-tab="${id}">${label}</button>`).join("")}
+    </nav>
     <div class="dock-body">
-      <div class="tab active">
-        <h2>Start</h2>
-        <p class="note">Open a <code>.wanim</code> recording or a saved
-          <code>.scene.json</code>, or just drop one anywhere on the page.</p>
-        <button id="dockOpen" class="button primary">Open a file…</button>
+      ${emptyTabs.map(([id, , note], i) => `<div class="tab${i === 0 ? " active" : ""}" id="tab-${id}"><p class="note">${note}</p></div>`).join("")}
+    </div>
+  `;
+  const emptyTabBtns = Array.from(dock.querySelectorAll<HTMLButtonElement>(".dock-tab"));
+  for (const b of emptyTabBtns) {
+    b.addEventListener("click", () => {
+      for (const x of emptyTabBtns) x.classList.toggle("active", x === b);
+      for (const el of dock.querySelectorAll(".tab")) el.classList.toggle("active", el.id === `tab-${b.dataset.tab}`);
+    });
+  }
+  // Disabled placeholder transport so the timeline dock reads as "present but
+  // inert" until a clip loads (createTransport replaces it on load).
+  timelineDock.innerHTML = `
+    <div class="transport-overlay disabled" aria-disabled="true">
+      <div class="t-main">
+        <button class="t-btn t-play" disabled aria-label="Play/pause">${ICONS.play}</button>
+        <div class="t-timeline" aria-disabled="true"></div>
+        <span class="t-time">0:00.00 / 0:00.00</span>
       </div>
     </div>
   `;
-  (document.getElementById("dockOpen") as HTMLButtonElement).addEventListener("click", () => fileInput.click());
-  timelineDock.innerHTML = "";
 }
 
 /** Set the moment the user opens anything — cancels the boot auto-restore. */
@@ -2929,6 +2947,7 @@ async function loadWanim(name: string, raw: ArrayBuffer, fromRestore = false) {
     preview.setClip(converted);
 
     transport?.dispose();
+    timelineDock.innerHTML = ""; // drop the disabled empty-state placeholder
     transport = createTransport(preview, converted.duration, converted.times.length);
     transportDuration = converted.duration;
     timelineDock.appendChild(transport.element);
@@ -2942,14 +2961,6 @@ async function loadWanim(name: string, raw: ArrayBuffer, fromRestore = false) {
   }
 }
 
-dropzone?.addEventListener("click", () => fileInput.click());
-document.getElementById("openFileBtn")?.addEventListener("click", (e) => {
-  e.stopPropagation();
-  fileInput.click();
-});
-dropzone?.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" || e.key === " ") fileInput.click();
-});
 fileInput.addEventListener("change", () => {
   const file = fileInput.files?.[0];
   if (file) void handleFile(file);
@@ -2960,18 +2971,19 @@ fileInput.addEventListener("cancel", () => {
   fileInput.accept = ".wanim,.json";
 });
 
+// Whole-page drag-drop (the dim empty line brightens while a file hovers).
 for (const evt of ["dragover", "dragenter"] as const) {
   document.addEventListener(evt, (e) => {
     e.preventDefault();
-    dropzone?.classList.add("dragging");
+    emptyState.classList.add("dragging");
   });
 }
 for (const evt of ["dragleave", "dragend"] as const) {
-  document.addEventListener(evt, () => dropzone?.classList.remove("dragging"));
+  document.addEventListener(evt, () => emptyState.classList.remove("dragging"));
 }
 document.addEventListener("drop", (e) => {
   e.preventDefault();
-  dropzone?.classList.remove("dragging");
+  emptyState.classList.remove("dragging");
   const file = e.dataTransfer?.files?.[0];
   if (file) void handleFile(file);
 });
