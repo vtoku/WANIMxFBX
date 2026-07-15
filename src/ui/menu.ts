@@ -31,16 +31,21 @@ export function buildMenuBar(host: HTMLElement, defs: MenuDef[]): { close(): voi
   host.innerHTML = "";
   host.setAttribute("role", "menubar");
   let openIdx = -1;
-  let panel: HTMLElement | null = null;
+  /** Open panels by depth: [top dropdown, flyout, ...]. All live in body. */
+  const panels: HTMLElement[] = [];
   const buttons: HTMLButtonElement[] = [];
 
+  function closeFrom(depth: number) {
+    while (panels.length > depth) panels.pop()!.remove();
+  }
+
   function closeMenu() {
-    if (panel) { panel.remove(); panel = null; }
+    closeFrom(0);
     if (openIdx >= 0) buttons[openIdx]?.setAttribute("aria-expanded", "false");
     openIdx = -1;
   }
 
-  function renderPanel(items: MenuItem[], anchor: HTMLElement, parent?: HTMLElement): HTMLElement {
+  function renderPanel(items: MenuItem[], anchor: HTMLElement, depth: number): HTMLElement {
     const p = document.createElement("div");
     p.className = "menu-panel";
     p.setAttribute("role", "menu");
@@ -64,19 +69,22 @@ export function buildMenuBar(host: HTMLElement, defs: MenuDef[]): { close(): voi
         `<span class="mi-label">${check}${it.label ?? ""}</span>` +
         `<span class="mi-key">${arrow}</span>`;
       if (it.submenu && enabled) {
-        let child: HTMLElement | null = null;
         const openChild = () => {
-          for (const r of Array.from(p.querySelectorAll<HTMLElement>(".menu-panel"))) r.remove();
-          child = renderPanel(it.submenu!(), row, p);
+          closeFrom(depth + 1);
+          renderPanel(it.submenu!(), row, depth + 1);
         };
         row.addEventListener("mouseenter", openChild);
-        row.addEventListener("click", (e) => { e.stopPropagation(); if (!child) openChild(); });
-      } else if (enabled && it.action) {
-        row.addEventListener("click", (e) => {
-          e.stopPropagation();
-          closeMenu();
-          it.action!();
-        });
+        row.addEventListener("click", (e) => { e.stopPropagation(); openChild(); });
+      } else {
+        // Hovering a plain row closes any flyout a sibling had opened.
+        row.addEventListener("mouseenter", () => closeFrom(depth + 1));
+        if (enabled && it.action) {
+          row.addEventListener("click", (e) => {
+            e.stopPropagation();
+            closeMenu();
+            it.action!();
+          });
+        }
       }
       rows.push(row);
       p.appendChild(row);
@@ -84,7 +92,7 @@ export function buildMenuBar(host: HTMLElement, defs: MenuDef[]): { close(): voi
     // Flyouts anchor to their parent row; top panels to the menu button.
     document.body.appendChild(p);
     const r = anchor.getBoundingClientRect();
-    if (parent) {
+    if (depth > 0) {
       p.style.left = `${Math.min(r.right - 2, window.innerWidth - p.offsetWidth - 4)}px`;
       p.style.top = `${Math.min(r.top, window.innerHeight - p.offsetHeight - 4)}px`;
     } else {
@@ -92,6 +100,7 @@ export function buildMenuBar(host: HTMLElement, defs: MenuDef[]): { close(): voi
       p.style.top = `${r.bottom + 2}px`;
     }
     (p as unknown as { _rows: HTMLButtonElement[] })._rows = rows;
+    panels.push(p);
     return p;
   }
 
@@ -101,7 +110,7 @@ export function buildMenuBar(host: HTMLElement, defs: MenuDef[]): { close(): voi
     if (!def) return;
     openIdx = i;
     buttons[i].setAttribute("aria-expanded", "true");
-    panel = renderPanel(def.items(), buttons[i]);
+    renderPanel(def.items(), buttons[i], 0);
   }
 
   defs.forEach((def, i) => {
@@ -128,8 +137,9 @@ export function buildMenuBar(host: HTMLElement, defs: MenuDef[]): { close(): voi
     return (p as unknown as { _rows: HTMLButtonElement[] })._rows.filter((r) => !r.disabled);
   }
   document.addEventListener("keydown", (e) => {
-    if (openIdx < 0 || !panel) return;
-    const rows = focusablesOf(panel);
+    const deepest = panels[panels.length - 1];
+    if (openIdx < 0 || !deepest) return;
+    const rows = focusablesOf(deepest);
     const cur = rows.indexOf(document.activeElement as HTMLButtonElement);
     if (e.key === "Escape") { e.preventDefault(); const b = buttons[openIdx]; closeMenu(); b?.focus(); }
     else if (e.key === "ArrowDown") { e.preventDefault(); rows[(cur + 1 + rows.length) % rows.length]?.focus(); }
@@ -143,9 +153,7 @@ export function buildMenuBar(host: HTMLElement, defs: MenuDef[]): { close(): voi
   window.addEventListener("pointerdown", (e) => {
     const t = e.target as Node;
     if (host.contains(t)) return;
-    if (panel && panel.contains(t)) return;
-    // A flyout lives in document.body; check any open menu-panel.
-    for (const p of Array.from(document.querySelectorAll(".menu-panel"))) if (p.contains(t)) return;
+    for (const p of panels) if (p.contains(t)) return;
     closeMenu();
   });
 
