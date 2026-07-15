@@ -515,5 +515,32 @@ const f0 = 0;
   }
 }
 
+// ---- hand pose: curl keys only that hand's finger locals ----------------------
+{
+  const { keyHandPose, hasHandFingers, handFingerBones } = await import("../src/rig/hands.ts");
+  if (hasHandFingers(c.names, "Right")) {
+    const layer = makeLayer("hand");
+    layer.extent = "hold";
+    const layers = [layer];
+    const fH = nearestFrame(c, 8);
+    const before = c.localQuat.map((tr) => [...tr[fH]]);
+    keyHandPose(c, layers, 0, "Right", { curl: 0.6, spread: 0, thumbCurl: 0 }, fH, c.times[fH] - c.times[0]);
+    const baked = applyRigLayers(c, layers);
+    const rightFingers = new Set(handFingerBones(c.names, "Right"));
+    let movedFingers = 0, touchedOther = 0, worstOther = 0;
+    for (let b = 0; b < c.names.length; b++) {
+      if (c.localQuat[b].some((q) => Math.hypot(...q) < 0.5)) continue; // degenerate/zero quats
+      const moved = qangle(baked.localQuat[b][fH], before[b]);
+      if (rightFingers.has(c.names[b])) { if (moved > 0.5) movedFingers++; }
+      else if (moved > 0.01) { touchedOther++; worstOther = Math.max(worstOther, moved); }
+    }
+    check("hand pose: curl moves only the right hand's finger locals",
+      movedFingers >= 8 && touchedOther === 0,
+      `fingers moved ${movedFingers}, other bones touched ${touchedOther} (worst ${worstOther.toExponential(1)}°)`);
+  } else {
+    check("hand pose: (skipped — recording has no right-hand fingers)", true, "");
+  }
+}
+
 if (failures) { console.error(`${failures} FAILURES`); process.exit(1); }
 console.log("OK");

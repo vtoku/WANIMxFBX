@@ -12,6 +12,7 @@ import {
   capturePinTargets, distributeWristTwist,
   type RigLayer, type EffectorId, type TimeRange, type EffectorTarget, type PinTarget,
 } from "./rig/rig.ts";
+import { keyHandPose, applyHandPose, hasHandFingers, type HandSide, type HandPoseAmounts } from "./rig/hands.ts";
 import { worldFromLocal, type FramePose } from "./convert/fk.ts";
 import { vsub, vadd, vlen, vnorm, quatFromTo } from "./convert/ik.ts";
 import { applyModifiers, defaultModifiers, applyReach, anyReach } from "./rig/modifiers.ts";
@@ -494,6 +495,11 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         <button id="rigDelKey" class="button ghost" title="Removes the selected handle's key nearest the playhead.">Delete key</button>
         <button id="rigReduce" class="button ghost" title="Drops keys on the selected handle that the curve wouldn't miss (within 0.5 cm / 1°).">Reduce keys</button>
       </div>
+    </div>
+
+    <div id="handPose" hidden>
+      <h4 class="group">Hand pose <span class="hint-i" title="Stamp a finger pose onto the active layer at the playhead. Curl closes the fingers, Spread fans them, Thumb curls the thumb. Each slider nudges from the current pose and snaps back to 0 — the keys land on the finger bones like any drag, so they retime, copy, and mirror.">ⓘ</span></h4>
+      <div id="handPoseSides"></div>
     </div>
 
     <h3 class="section">Modifiers <span class="hint-i" title="Whole-clip corrections, no keys needed. Hips keeps the feet planted; knees and elbows swing without moving hips, feet, or hands. Layers apply on top of these.">ⓘ</span></h3>
@@ -1202,6 +1208,79 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     });
   }
 
+  // ---- hand pose stamps ----------------------------------------------------
+  const handPoseWrap = document.getElementById("handPose") as HTMLDivElement;
+  const handPoseSides = document.getElementById("handPoseSides") as HTMLDivElement;
+
+  /** Preview the live hand-pose delta (playhead frame) without keying. */
+  function previewHandPose(side: HandSide, amounts: HandPoseAmounts) {
+    if (!rigBaseClip || !preview || activeLayerIdx < 0) return;
+    const f = nearestFrame(rigBaseClip, preview.getTime());
+    const pose = stackPoseThrough(rigBaseClip, rigLayers, activeLayerIdx, f);
+    applyHandPose(rigBaseClip, pose, side, amounts);
+    applyLayersToPose(pose, rigBaseClip.names, rigBaseClip.parents, rigLayers.slice(activeLayerIdx + 1), rigBaseClip.times[f] - rigBaseClip.times[0]);
+    preview.setPoseOverride(pose);
+  }
+
+  /** Build the per-hand slider sets for the hands present in the clip. */
+  function buildHandPose() {
+    handPoseSides.innerHTML = "";
+    const names = (rigBaseClip ?? converted).names;
+    const sides: HandSide[] = [];
+    for (const s of ["Left", "Right"] as HandSide[]) if (hasHandFingers(names, s)) sides.push(s);
+    handPoseWrap.hidden = sides.length === 0;
+    for (const side of sides) {
+      const amounts: HandPoseAmounts = { curl: 0, spread: 0, thumbCurl: 0 };
+      const block = document.createElement("div");
+      block.className = "hand-pose-side";
+      const title = document.createElement("div");
+      title.className = "clean-stats";
+      title.style.margin = "2px 0";
+      title.textContent = `${side} hand`;
+      block.appendChild(title);
+      const mk = (label: string, key: keyof HandPoseAmounts, min: number) => {
+        const wrap = document.createElement("label");
+        wrap.className = "field sub";
+        const span = document.createElement("span");
+        span.textContent = label;
+        const input = document.createElement("input");
+        input.type = "range";
+        input.min = String(min);
+        input.max = "100";
+        input.step = "5";
+        input.value = "0";
+        const scale = 1 / 100;
+        input.addEventListener("input", () => {
+          amounts[key] = Number(input.value) * scale;
+          previewHandPose(side, amounts);
+        });
+        const stamp = () => {
+          if (!rigBaseClip || !preview || activeLayerIdx < 0) { input.value = "0"; return; }
+          const f = nearestFrame(rigBaseClip, preview.getTime());
+          const t = rigBaseClip.times[f] - rigBaseClip.times[0];
+          if (amounts.curl || amounts.spread || amounts.thumbCurl) {
+            pushHistory();
+            const dirty = keyHandPose(rigBaseClip, rigLayers, activeLayerIdx, side, amounts, f, t);
+            preview.setPoseOverride(null);
+            rebakeRig(dirty ?? undefined);
+            updateRigEditor();
+          } else {
+            preview.setPoseOverride(null);
+          }
+          amounts.curl = amounts.spread = amounts.thumbCurl = 0;
+          for (const r of block.querySelectorAll("input")) (r as HTMLInputElement).value = "0";
+        };
+        input.addEventListener("change", stamp);
+        wrap.append(span, input);
+        block.appendChild(wrap);
+      };
+      mk("Curl", "curl", 0);
+      mk("Spread", "spread", -100);
+      mk("Thumb curl", "thumbCurl", 0);
+      handPoseSides.appendChild(block);
+    }
+  }
+
   function keyContextItems(): Array<{ label: string; action?: () => void; disabled?: boolean }> {
     const n = pickedKeys.length;
     return [
@@ -1873,6 +1952,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   });
 
   renderRigLayers();
+  buildHandPose();
   preview?.setPinned(pinnedEffectors);
 
   // ---- modifiers -----------------------------------------------------------
