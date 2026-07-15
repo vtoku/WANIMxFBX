@@ -3238,7 +3238,7 @@ function showEmptyEditor() {
   transport = null;
   preview?.clear();
   emptyState.hidden = false;
-  editbar.innerHTML = `<span class="eb-hint">No recording loaded — open one from File, or press Ctrl+O</span>`;
+  editbar.innerHTML = `<span class="eb-hint">No recording loaded. Open one from File, or press Ctrl+O</span>`;
   const emptyTabs: [string, string, string][] = [
     ["clean", "Clean", "Open a recording to clean up its motion."],
     ["rig", "Rig", "Open a recording to pose and layer edits."],
