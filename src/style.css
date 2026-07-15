@@ -1098,3 +1098,30 @@ code {
   font-size: 0.82rem;
   width: 13rem;
 }
+
+/* ---- rig picker (schematic body map) ------------------------------------- */
+.rig-picker { margin: 0 0 0.5rem; }
+.picker-svg {
+  display: block;
+  width: 100%;
+  max-width: 190px;
+  margin: 0 auto;
+  background: var(--bg-raise);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+}
+.picker-link { stroke: var(--border); stroke-width: 2; }
+.picker-hit { fill: transparent; cursor: pointer; }
+.picker-dot { opacity: 0.4; stroke: transparent; stroke-width: 2; transition: opacity 0.1s; }
+.picker-node:hover .picker-dot { opacity: 0.8; }
+.picker-node.sel .picker-dot { opacity: 1; stroke: var(--text); }
+.picker-node.pinned .picker-dot { stroke: var(--accent); }
+.picker-node.fk .picker-dot { opacity: 0.9; stroke-dasharray: 2 2; stroke: var(--text-dim); }
+.picker-node.absent { display: none; }
+.picker-key { fill: var(--accent); opacity: 0; }
+.picker-node.keyed .picker-key { opacity: 1; }
+.picker-sub { margin: 0.4rem 0 0.2rem; }
+.picker-finger-row { display: flex; align-items: center; gap: 4px; margin: 2px 0; font-size: 0.78rem; color: var(--text-dim); }
+.picker-finger-row span { width: 3.4rem; }
+.picker-seg { padding: 1px 7px; min-width: 0; font-size: 0.75rem; }

@@ -21,6 +21,7 @@ import { applyTimeWarp, warpMaps, type WarpKey } from "./rig/timewarp.ts";
 import { quatMul, quatDot, quatNormalize, quatToEulerZYX, eulerZYXToQuat, RAD2DEG } from "./convert/quat.ts";
 import type { CurveEase, DenseModel, DenseChannel, ChannelsConfig } from "./ui/curves.ts";
 import { buildChannelGroups, groupBones, boneLabel } from "./ui/channels.ts";
+import { RigPicker } from "./ui/picker.ts";
 import type { Vec3, Quat } from "./wanim/parse.ts";
 import { writeAnimationFbx, type SkinnedMeshExport } from "./fbx/animationFbx.ts";
 import { remapNames, type NameScheme } from "./convert/skeleton.ts";
@@ -474,6 +475,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     </div>
 
     <div class="tab" id="tab-rig">
+    <div id="pickerMount"></div>
     <h4 class="group">Layers <span class="hint-i" title="FK/IK adjustment layers, MotionBuilder style. Add a layer, pause, then drag a handle on the figure; a key lands at the playhead. Spheres (hips, hands, feet) move with IK and rotate; the small diamonds on the body bones rotate FK-style. On the timeline: right-click a key for copy/paste/delete, shift-drag to select several, ctrl-click to add one, drag a key to retime it. Edits auto-save for this recording.">ⓘ</span></h4>
     <div id="rigLayers" class="rig-layers"></div>
     <div class="rig-row">
@@ -1267,6 +1269,36 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     }
   }
 
+  // ---- picker (schematic body map) -----------------------------------------
+  const picker = new RigPicker({
+    onSelect: (id) => { preview?.selectEffector(id); },
+    onHand: (side) => { picker.openFingers(side); handPoseWrap.hidden = false; },
+    onFinger: (bone) => {
+      const eff = effectorForBone(bone);
+      if (eff) { preview?.selectEffector(eff.id); transport?.curveView.syncTreeSelection([bone]); }
+    },
+    onPin: (id) => {
+      if (!effectorDef(id).chain) return;
+      if (pinnedEffectors.has(id)) pinnedEffectors.delete(id); else pinnedEffectors.add(id);
+      preview?.setPinned(pinnedEffectors);
+      saveRigCache();
+      updateRigEditor();
+    },
+  });
+  (document.getElementById("pickerMount") as HTMLDivElement).appendChild(picker.el);
+  function updatePicker() {
+    const layer = rigLayers[activeLayerIdx];
+    const keyed = new Set<string>();
+    if (layer) for (const tr of layer.tracks) if (tr.rotKeys.length + tr.posKeys.length) keyed.add(tr.bone);
+    picker.update({
+      keyedBones: keyed,
+      pinned: pinnedEffectors,
+      ikfk,
+      selected: selectedEffector,
+      present: new Set((rigBaseClip ?? converted).names),
+    });
+  }
+
   // ---- hand pose stamps ----------------------------------------------------
   const handPoseWrap = document.getElementById("handPose") as HTMLDivElement;
   const handPoseSides = document.getElementById("handPoseSides") as HTMLDivElement;
@@ -1351,6 +1383,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
 
   function updateRigEditor() {
     const layer = rigLayers[activeLayerIdx];
+    updatePicker();
     // Drop picks that no longer exist (deleted keys, switched layer).
     pickedKeys = layer
       ? pickedKeys.filter((p) => {
