@@ -4,6 +4,7 @@ import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.j
 import type { Vec3 } from "../wanim/parse.ts";
 import { bindWorldPositions } from "./clip.ts";
 import { MOTIONBUILDER_NAMES } from "./skeleton.ts";
+import { resolveUnityName } from "./boneResolve.ts";
 import type { SkinnedMeshExport } from "../fbx/animationFbx.ts";
 
 /**
@@ -38,107 +39,6 @@ export interface BodyMeshData {
   map?: THREE.Texture | null;
   /** Raw base-color image bytes (PNG/JPEG from the GLB) for FBX embedding. */
   texture?: { bytes: Uint8Array; mime: string };
-}
-
-// Blender/Rigify-style names (Quaternius) ??? Unity HumanBodyBones names.
-const RIGIFY_MAP: Record<string, string> = {
-  hips: "Hips",
-  spine001: "Spine",
-  spine002: "Chest",
-  spine003: "UpperChest",
-  neck: "Neck",
-  head: "Head",
-  shoulderL: "LeftShoulder",
-  upper_armL: "LeftUpperArm",
-  forearmL: "LeftLowerArm",
-  handL: "LeftHand",
-  thumb01L: "LeftThumbProximal",
-  thumb02L: "LeftThumbIntermediate",
-  thumb03L: "LeftThumbDistal",
-  f_index01L: "LeftIndexProximal",
-  f_index02L: "LeftIndexIntermediate",
-  f_index03L: "LeftIndexDistal",
-  f_middle01L: "LeftMiddleProximal",
-  f_middle02L: "LeftMiddleIntermediate",
-  f_middle03L: "LeftMiddleDistal",
-  f_ring01L: "LeftRingProximal",
-  f_ring02L: "LeftRingIntermediate",
-  f_ring03L: "LeftRingDistal",
-  f_pinky01L: "LeftLittleProximal",
-  f_pinky02L: "LeftLittleIntermediate",
-  f_pinky03L: "LeftLittleDistal",
-  thighL: "LeftUpperLeg",
-  shinL: "LeftLowerLeg",
-  footL: "LeftFoot",
-  toeL: "LeftToes",
-  shoulderR: "RightShoulder",
-  upper_armR: "RightUpperArm",
-  forearmR: "RightLowerArm",
-  handR: "RightHand",
-  thumb01R: "RightThumbProximal",
-  thumb02R: "RightThumbIntermediate",
-  thumb03R: "RightThumbDistal",
-  f_index01R: "RightIndexProximal",
-  f_index02R: "RightIndexIntermediate",
-  f_index03R: "RightIndexDistal",
-  f_middle01R: "RightMiddleProximal",
-  f_middle02R: "RightMiddleIntermediate",
-  f_middle03R: "RightMiddleDistal",
-  f_ring01R: "RightRingProximal",
-  f_ring02R: "RightRingIntermediate",
-  f_ring03R: "RightRingDistal",
-  f_pinky01R: "RightLittleProximal",
-  f_pinky02R: "RightLittleIntermediate",
-  f_pinky03R: "RightLittleDistal",
-  thighR: "RightUpperLeg",
-  shinR: "RightLowerLeg",
-  footR: "RightFoot",
-  toeR: "RightToes",
-};
-
-function normalizeBoneName(raw: string): string {
-  return raw.replace(/^mixamorig:?/, "").replace(/^DEF-/, "").replace(/[. ]/g, "");
-}
-
-// Quaternius "modular" rig names (UpperArmL, WristR, Abdomen, Torso, Index1L???)
-// ??? Unity HumanBodyBones names.
-const MODULAR_BASE: Record<string, string> = {
-  Hips: "Hips",
-  Abdomen: "Spine",
-  Torso: "Chest",
-  Chest: "UpperChest",
-  Neck: "Neck",
-  Head: "Head",
-  Shoulder: "Shoulder",
-  UpperArm: "UpperArm",
-  LowerArm: "LowerArm",
-  Wrist: "Hand",
-  UpperLeg: "UpperLeg",
-  LowerLeg: "LowerLeg",
-  Foot: "Foot",
-  Toe: "Toes",
-  ToeBase: "Toes",
-};
-const MODULAR_FINGER: Record<string, string> = {
-  Thumb: "Thumb",
-  Index: "Index",
-  Middle: "Middle",
-  Ring: "Ring",
-  Pinky: "Little",
-};
-function modularToUnity(name: string): string | null {
-  const side = name.match(/^(.*?)([LR])$/);
-  const base = side ? side[1] : name;
-  const prefix = side ? (side[2] === "L" ? "Left" : "Right") : "";
-  const finger = base.match(/^(Thumb|Index|Middle|Ring|Pinky)([123])$/);
-  if (finger && prefix) {
-    const seg = ["Proximal", "Intermediate", "Distal"][Number(finger[2]) - 1];
-    return `${prefix}${MODULAR_FINGER[finger[1]]}${seg}`;
-  }
-  const mapped = MODULAR_BASE[base];
-  if (!mapped) return null;
-  if (/^(Hips|Spine|Chest|UpperChest|Neck|Head)$/.test(mapped)) return prefix ? null : mapped;
-  return prefix ? `${prefix}${mapped}` : null;
 }
 
 interface BodySource {
@@ -369,12 +269,8 @@ export function extractBodyMeshes(
   const resolveBone = (obj: THREE.Object3D): number | undefined => {
     const explicit = boneUnity?.get(obj);
     if (explicit !== undefined) return nameToIndex.get(explicit);
-    const n = normalizeBoneName(obj.name);
-    return (
-      nameToIndex.get(n) ??
-      nameToIndex.get(RIGIFY_MAP[n] ?? "") ??
-      nameToIndex.get(modularToUnity(n) ?? "")
-    );
+    const unity = resolveUnityName(obj.name);
+    return unity ? nameToIndex.get(unity) : undefined;
   };
   // Source bone ??? our bone (walk up through unmapped helpers like HeadTop_End).
   const boneOurIndex = skeleton.bones.map((b) => {

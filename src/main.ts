@@ -1,6 +1,9 @@
 import "./style.css";
 import { parseWanim, BONE_COUNT, type WanimClip } from "./wanim/parse.ts";
 import { convertCharacter, resample, retargetProportions, distributeBonelessSpine, type ConvertedClip } from "./convert/clip.ts";
+import { importFbxAnimation, type FbxImportResult } from "./convert/importFbx.ts";
+import { defaultRestClip } from "./convert/restSkeleton.ts";
+import { parseVrmMeta } from "./vrm/vrmHumanoid.ts";
 import { cleanClip, smoothRange, applyCleanOps, type CleanOpts, type CleanStats, type RangeSmooth, type CleanOp, type CleanFilter } from "./convert/clean.ts";
 import type { PlantSpan } from "./convert/feet.ts";
 import {
@@ -79,7 +82,7 @@ document.addEventListener("keydown", (e) => {
     // them even in a field and with no clip loaded.
     const kk = e.key.toLowerCase();
     if (kk === "o" && !e.shiftKey) { e.preventDefault(); openRecordingPicker(); return; }
-    if (kk === "s" && !e.shiftKey) { e.preventDefault(); menuActions?.saveScene(); return; }
+    if (kk === "s" && !e.shiftKey) { e.preventDefault(); dispatchSaveScene(); return; }
     // In a text field the browser's own editing shortcuts (incl. text undo)
     // must win — hijacking Ctrl+Z there silently destroyed rig edits.
     if (inField || !rigHotkeys) return;
@@ -147,6 +150,10 @@ interface MenuActions {
   saveSceneAs(): void;
   export(fmt: "fbx" | "vrma" | "wanim" | "shogun"): void;
   openBody(): void;
+  /** Swap the body of a live session in place (drop VRM / File > Open body). */
+  loadBodyBytes(name: string, data: ArrayBuffer): Promise<void>;
+  /** Whether a Shogun target-rig export is available (a VRM body is loaded). */
+  shogunReady(): boolean;
   undo(): void;
   redo(): void;
   copy(): void;
@@ -181,6 +188,19 @@ async function openScenePicker() {
   }
   fileInput.accept = ".json,application/json"; fileInput.click();
 }
+// Body picker is always available (File > Open body): a dedicated hidden input
+// so the accepted types don't clobber the recording input's.
+const bodyInput = document.createElement("input");
+bodyInput.type = "file";
+bodyInput.accept = ".vrm,.glb";
+bodyInput.hidden = true;
+document.body.appendChild(bodyInput);
+bodyInput.addEventListener("change", () => {
+  const file = bodyInput.files?.[0];
+  bodyInput.value = "";
+  if (file) void handleFile(file);
+});
+function openBodyPicker() { bodyInput.click(); }
 
 const openPreferences = openPreferencesDialog;
 // View menu layout presets: set both splitter sizes + the dock/panel state.
@@ -218,6 +238,17 @@ const recentSubmenu = (): MenuItem[] => {
 };
 
 const hasClip = () => !!menuActions;
+/** A session of any kind (recording, fbx, or body-only) is open. */
+const hasSession = () => !!menuActions || !!bodyPanel;
+/** A Shogun target-rig export is available (a VRM body is loaded). */
+const shogunAvailable = () => (menuActions?.shogunReady() ?? false) || (bodyPanel?.isVrm() ?? false);
+
+function dispatchSaveScene() { (menuActions ?? bodyPanel)?.saveScene(); }
+function dispatchSaveSceneAs() { (menuActions ?? bodyPanel)?.saveSceneAs(); }
+function dispatchExportShogun() {
+  if (menuActions) menuActions.export("shogun");
+  else bodyPanel?.exportShogun();
+}
 
 const menuDefs: MenuDef[] = [
   {
@@ -225,16 +256,16 @@ const menuDefs: MenuDef[] = [
     items: () => [
       { label: "Open recording...", hotkey: keyFor("open"), action: openRecordingPicker },
       { label: "Open scene...", action: openScenePicker },
-      { label: "Open body (VRM/GLB)...", enabled: hasClip, action: () => menuActions?.openBody() },
+      { label: "Open body (VRM/GLB)...", action: openBodyPicker },
       { label: "Recent", submenu: recentSubmenu, hidden: () => !recentSupported() },
       { separator: true },
-      { label: "Save scene", hotkey: keyFor("save"), enabled: hasClip, action: () => menuActions?.saveScene() },
-      { label: "Save scene as...", enabled: hasClip, action: () => menuActions?.saveSceneAs() },
+      { label: "Save scene", hotkey: keyFor("save"), enabled: hasSession, action: dispatchSaveScene },
+      { label: "Save scene as...", enabled: hasSession, action: dispatchSaveSceneAs },
       { separator: true },
       { label: "Export FBX", enabled: hasClip, action: () => menuActions?.export("fbx") },
       { label: "Export VRMA", enabled: hasClip, action: () => menuActions?.export("vrma") },
       { label: "Export WANIM", enabled: hasClip, action: () => menuActions?.export("wanim") },
-      { label: "Export Shogun target rig", enabled: hasClip, action: () => menuActions?.export("shogun") },
+      { label: "Export Shogun target rig", enabled: shogunAvailable, action: dispatchExportShogun },
     ],
   },
   {
@@ -297,15 +328,32 @@ interface SceneFile {
   magic: "wanimscene";
   v: number;
   name: string;
+  /** Which loader rebuilds the clip. Absent = "wanim" (pre-v4 scenes). */
+  source?: "wanim" | "fbx" | "body";
   settings?: Record<string, unknown>;
   rig?: Record<string, unknown>;
-  wanim: string; // base64 of the original .wanim bytes
+  /** base64 of the original .wanim bytes (wanim sessions). */
+  wanim?: string;
+  /** base64 of the original .fbx bytes (fbx sessions). */
+  fbx?: string;
   /** Custom VRM/GLB body, embedded so the project is fully self-contained. */
   body?: { name: string; data: string };
 }
 let pendingScene: SceneFile | null = null;
 /** Bytes of the currently loaded custom body (kept for scene embedding). */
 let userBodyBytes: { name: string; data: ArrayBuffer } | null = null;
+/** Body carried across a body-only -> recording/fbx upgrade (kept in place). */
+let pendingBody: { name: string; data: ArrayBuffer } | null = null;
+/** FBX take picker for the editbar (set before buildPanel for fbx sessions). */
+let pendingFbxTakes: { names: string[]; active: number; onPick: (i: number) => void } | null = null;
+/** Body-only session controls exposed to the persistent menu bar. */
+interface BodyPanel {
+  saveScene(): void;
+  saveSceneAs(): void;
+  exportShogun(): void;
+  isVrm(): boolean;
+}
+let bodyPanel: BodyPanel | null = null;
 
 function bytesToBase64(bytes: Uint8Array): string {
   let out = "";
@@ -326,6 +374,8 @@ let loaded: {
   name: string;
   clip: WanimClip;
   converted: ConvertedClip;
+  /** Which loader produced this clip (drives scene embedding + re-open). */
+  source: "wanim" | "fbx";
   /** Original file bytes — embedded into saved scenes. */
   raw: ArrayBuffer;
   /** After cleaning + optional Ybot re-proportioning — what preview/export use. */
@@ -2749,17 +2799,12 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       if (propSel.value === "body") void reclean();
     });
   });
-  bodyFile.addEventListener("change", async () => {
-    const file = bodyFile.files?.[0];
-    bodyFile.value = "";
-    if (!file) {
-      bodySel.value = lastBodyChoice; // cancelled
-      return;
-    }
+  /** Load a VRM/GLB as the live session's body (file picker or dropped file). */
+  async function applyBodyBytes(fileName: string, bytes: ArrayBuffer) {
     try {
-      const bytes = await file.arrayBuffer();
       const mapped = await setBodySource(bytes);
-      userBodyBytes = { name: file.name, data: bytes };
+      userBodyBytes = { name: fileName, data: bytes };
+      bodySel.value = "vrm";
       lastBodyChoice = "vrm";
       syncShogunRow();
       preview?.setBodyMode("human");
@@ -2767,7 +2812,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       preview?.refreshBody();
       if (propSel.value === "body") await reclean();
       if (mapped === 0) {
-        showError(`${file.name}: no VRM humanoid mapping found, falling back to bone-name matching.`);
+        showError(`${fileName}: no VRM humanoid mapping found, falling back to bone-name matching.`);
       }
     } catch (err) {
       bodySel.value = lastBodyChoice;
@@ -2775,6 +2820,15 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       preview?.setFaceVisible(true);
       showError(err instanceof Error ? err.message : String(err));
     }
+  }
+  bodyFile.addEventListener("change", async () => {
+    const file = bodyFile.files?.[0];
+    bodyFile.value = "";
+    if (!file) {
+      bodySel.value = lastBodyChoice; // cancelled
+      return;
+    }
+    await applyBodyBytes(file.name, await file.arrayBuffer());
   });
 
   // ---- Shogun target-rig export -------------------------------------------
@@ -3004,13 +3058,17 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   /** One button, whole work project: recording + edits + settings + assets. */
   function saveScene(baseName?: string, forcePicker = false) {
     if (!loaded) return;
+    const rawB64 = bytesToBase64(new Uint8Array(loaded.raw));
     const scene: SceneFile = {
       magic: "wanimscene",
-      v: 3,
+      v: 4,
       name: loaded.name,
+      source: loaded.source,
       settings: sceneSettings(),
       rig: { v: 3, layers: rigLayers, mods, counter: layerCounter, warp: warpKeys, ranges: rangeSmooths, cleanOps, feetPlants: feetPlantRemoved, pins: [...pinnedEffectors], fk: [...fkLimbs], ikfk: { ...ikfk } },
-      wanim: bytesToBase64(new Uint8Array(loaded.raw)),
+      // The original source bytes, so the project reopens byte-for-byte.
+      wanim: loaded.source === "wanim" ? rawB64 : undefined,
+      fbx: loaded.source === "fbx" ? rawB64 : undefined,
       // Embed the custom body so the project is fully self-contained.
       body: userBodyBytes
         ? { name: userBodyBytes.name, data: bytesToBase64(new Uint8Array(userBodyBytes.data)) }
@@ -3096,8 +3154,42 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         }
       })();
     }
+  } else if (pendingBody) {
+    // Upgraded from a body-only session: keep the loaded body in place.
+    const carried = pendingBody;
+    pendingBody = null;
+    userBodyBytes = carried;
+    lastBodyChoice = "vrm";
+    bodySel.value = "vrm";
+    syncShogunRow();
+    preview?.setBodyMode("human");
+    preview?.setFaceVisible(false);
+    preview?.refreshBody();
+    if (propSel.value === "body") void reclean();
   } else {
     userBodyBytes = null; // fresh recording — no custom body yet
+  }
+
+  // FBX take picker: a small select in the editbar when the file has more than
+  // one motion take (ours always ships anim + TPose, but TPose is filtered).
+  if (pendingFbxTakes && pendingFbxTakes.names.length > 1) {
+    const takes = pendingFbxTakes;
+    pendingFbxTakes = null;
+    const sel = document.createElement("select");
+    sel.id = "fbxTake";
+    sel.title = "Which FBX take to edit";
+    sel.className = "eb-name";
+    takes.names.forEach((n, i) => {
+      const o = document.createElement("option");
+      o.value = String(i);
+      o.textContent = n;
+      if (i === takes.active) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.addEventListener("change", () => takes.onPick(Number(sel.value)));
+    editbar.querySelector(".eb-spacer")?.before(sel);
+  } else {
+    pendingFbxTakes = null;
   }
 
   // Auto-build the rig: an empty Layer 1 so the control rig works with zero
@@ -3199,6 +3291,8 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     saveSceneAs,
     export: (fmt) => { void doExport(fmt); },
     openBody: () => bodyFile.click(),
+    loadBodyBytes: (fileName, data) => applyBodyBytes(fileName, data),
+    shogunReady: () => !!userBodyBytes && isVrmBody(userBodyBytes.data),
     undo: rigUndo,
     redo: rigRedo,
     copy: copyPicked,
@@ -3238,12 +3332,12 @@ function showEmptyEditor() {
   transport = null;
   preview?.clear();
   emptyState.hidden = false;
-  editbar.innerHTML = `<span class="eb-hint">No recording loaded. Open one from File, or press Ctrl+O</span>`;
+  editbar.innerHTML = `<span class="eb-hint">Nothing loaded. Open a recording or a VRM/FBX from File, or press Ctrl+O</span>`;
   const emptyTabs: [string, string, string][] = [
     ["clean", "Clean", "Open a recording to clean up its motion."],
     ["rig", "Rig", "Open a recording to pose and layer edits."],
-    ["export", "Export", "Open a recording to export FBX, VRMA, or wanim."],
-    ["info", "Info", "Open a <code>.wanim</code> recording or a saved <code>.scene.json</code>."],
+    ["export", "Export", "Open a recording, or a VRM/GLB body for a Shogun target rig."],
+    ["info", "Info", "Open a <code>.wanim</code>/<code>.fbx</code>, a VRM/GLB body, or a saved <code>.scene.json</code>."],
   ];
   dock.innerHTML = `
     <nav class="dock-tabs" role="tablist">
@@ -3280,35 +3374,66 @@ let restoredSessionName: string | null = null;
 
 async function handleFile(file: File) {
   // Preference: confirm before dropping the current session for a new file
-  // (edits stay cached per recording, so nothing is truly lost).
-  if (loaded && getPref("confirmReplace") &&
+  // (edits stay cached per recording, so nothing is truly lost). A VRM/GLB
+  // dropped onto a live session just swaps the body, so it never prompts.
+  const lower = file.name.toLowerCase();
+  const isBodyAsset = lower.endsWith(".vrm") || lower.endsWith(".glb");
+  if (loaded && !isBodyAsset && getPref("confirmReplace") &&
       !window.confirm("Open a different file? Your edits stay saved for the current recording.")) {
     return;
   }
   userOpenedFile = true;
   errorEl.hidden = true;
-  const lower = file.name.toLowerCase();
   if (lower.endsWith(".json")) {
-    // Saved scene: recording + edits + settings in one file.
-    try {
-      const scene = JSON.parse(await file.text()) as SceneFile;
-      if (scene.magic !== "wanimscene" || typeof scene.wanim !== "string") {
-        throw new Error("not a scene file (drop a .wanim or a saved .scene.json)");
-      }
-      pendingScene = scene;
-      const bytes = base64ToBytes(scene.wanim);
-      await loadWanim(scene.name || file.name.replace(/\.scene\.json$/i, ".wanim"), bytes.buffer as ArrayBuffer);
-    } catch (err) {
-      pendingScene = null;
-      showError(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
+    await loadScene(file);
+    return;
+  }
+  if (lower.endsWith(".wanim")) {
+    // Dropping a recording onto a body-only session upgrades in place, keeping
+    // the loaded body (setBodySource holds it; buildPanel re-adopts it).
+    if (bodyPanel && userBodyBytes) pendingBody = userBodyBytes;
+    await loadWanim(file.name, await file.arrayBuffer());
+    return;
+  }
+  if (lower.endsWith(".fbx")) {
+    if (bodyPanel && userBodyBytes) pendingBody = userBodyBytes;
+    await loadFbx(file.name, await file.arrayBuffer());
+    return;
+  }
+  if (isBodyAsset) {
+    const bytes = await file.arrayBuffer();
+    // Live session (recording or fbx): swap the body in place. No session yet:
+    // start a body-only session.
+    if (menuActions) await menuActions.loadBodyBytes(file.name, bytes);
+    else await startBodyOnly(file.name, bytes);
+    return;
+  }
+  showError(`"${file.name}" is not a .wanim, .fbx, .vrm/.glb, or saved .scene.json.`);
+}
+
+/** Load a saved scene (recording, fbx, or body-only), routed by its source. */
+async function loadScene(file: File) {
+  try {
+    const scene = JSON.parse(await file.text()) as SceneFile;
+    if (scene.magic !== "wanimscene") {
+      throw new Error("not a scene file (drop a .wanim/.fbx or a saved .scene.json)");
     }
-    return;
+    const source = scene.source ?? "wanim";
+    pendingScene = scene;
+    if (source === "fbx") {
+      if (typeof scene.fbx !== "string") throw new Error("scene is missing its FBX data");
+      await loadFbx(scene.name || file.name.replace(/\.scene\.json$/i, ".fbx"), base64ToBytes(scene.fbx).buffer as ArrayBuffer);
+    } else if (source === "body") {
+      if (!scene.body?.data) throw new Error("scene is missing its body data");
+      await startBodyOnly(scene.body.name || scene.name, base64ToBytes(scene.body.data).buffer as ArrayBuffer, scene);
+    } else {
+      if (typeof scene.wanim !== "string") throw new Error("scene is missing its recording data");
+      await loadWanim(scene.name || file.name.replace(/\.scene\.json$/i, ".wanim"), base64ToBytes(scene.wanim).buffer as ArrayBuffer);
+    }
+  } catch (err) {
+    pendingScene = null;
+    showError(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
   }
-  if (!lower.endsWith(".wanim")) {
-    showError(`"${file.name}" is not a .wanim file (or a saved .scene.json).`);
-    return;
-  }
-  await loadWanim(file.name, await file.arrayBuffer());
 }
 
 async function loadWanim(name: string, raw: ArrayBuffer, fromRestore = false) {
@@ -3319,7 +3444,8 @@ async function loadWanim(name: string, raw: ArrayBuffer, fromRestore = false) {
       return;
     }
     const converted = convertCharacter(clip, 0);
-    loaded = { name, clip, converted, raw, display: converted };
+    loaded = { name, clip, converted, source: "wanim", raw, display: converted };
+    bodyPanel = null; // a recording session replaces any body-only session
 
     emptyState.hidden = true;
 
@@ -3340,6 +3466,267 @@ async function loadWanim(name: string, raw: ArrayBuffer, fromRestore = false) {
     if (!fromRestore) void saveLastSession(name, raw);
   } catch (err) {
     showError(err instanceof Error ? err.message : String(err));
+  }
+}
+
+/**
+ * A minimal WanimClip standing in for an FBX-sourced clip, so buildPanel and
+ * the WANIM writer (which read blendshape names + version off the template)
+ * work unchanged. Downstream ConvertedClip consumers never see this.
+ */
+function syntheticWanim(c: ConvertedClip): WanimClip {
+  const blendshapes: Record<string, Record<string, number>[]> = {};
+  if (c.face && c.face.names.length) {
+    blendshapes.__ARKit__ = [Object.fromEntries(c.face.names.map((n) => [n, 0]))];
+  }
+  return {
+    version: 2,
+    times: c.times.slice(),
+    characters: [{ bonePositions: [], boneRotations: [], blendshapes, rootPositions: [], rootRotations: [] }],
+  };
+}
+
+/** Parsed FBX takes cached by raw bytes so the take picker doesn't re-parse. */
+let fbxCache: { raw: ArrayBuffer; result: FbxImportResult } | null = null;
+
+/** Import an FBX animation take as a full editing session. */
+async function loadFbx(name: string, raw: ArrayBuffer, takeIndex = 0) {
+  try {
+    const result = fbxCache?.raw === raw ? fbxCache.result : importFbxAnimation(raw);
+    fbxCache = { raw, result };
+    const idx = Math.max(0, Math.min(takeIndex, result.takes.length - 1));
+    const converted = result.takes[idx].clip;
+    const synthetic = syntheticWanim(converted);
+    loaded = { name, clip: synthetic, converted, source: "fbx", raw, display: converted };
+    bodyPanel = null;
+
+    emptyState.hidden = true;
+    if (!preview) preview = new PreviewScene(viewport);
+    (window as unknown as { __preview?: PreviewScene }).__preview = preview;
+    preview.setRate(getPref("playbackRate"));
+    preview.setClip(converted);
+
+    transport?.dispose();
+    timelineDock.innerHTML = "";
+    transport = createTransport(preview, converted.duration, converted.times.length);
+    transportDuration = converted.duration;
+    timelineDock.appendChild(transport.element);
+
+    // Ambiguous multi-take files get a toolbar select; a single take gets none.
+    pendingFbxTakes =
+      result.takes.length > 1
+        ? { names: result.takes.map((t) => t.name), active: idx, onPick: (i) => { void loadFbx(name, raw, i); } }
+        : null;
+
+    buildPanel(name, synthetic, converted);
+  } catch (err) {
+    showError(`${name}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Start a body-only session: a VRM/GLB with no recording. The body renders in
+ * its own T-pose (through the same retarget pipeline), and a reduced panel
+ * offers only the Shogun target-rig export. Dropping a recording upgrades it.
+ */
+async function startBodyOnly(name: string, bytes: ArrayBuffer, scene?: SceneFile) {
+  try {
+    const mapped = await setBodySource(bytes); // throws on an unreadable file
+    userBodyBytes = { name, data: bytes };
+    // Seed a canonical skeleton, resolve the body's OWN T-posed joints, and put
+    // the rest pose on them for a 1:1 mesh (same fixed point as proportions:body).
+    const seed = defaultRestClip();
+    const joints = await getBodyJoints(seed.parents, seed.bindPos, seed.names);
+    const rest = retargetProportions(seed, joints);
+
+    loaded = null;
+    rigHotkeys = null;
+    transportHotkeys = null;
+    menuActions = null;
+    emptyState.hidden = true;
+    if (!preview) preview = new PreviewScene(viewport);
+    (window as unknown as { __preview?: PreviewScene }).__preview = preview;
+    preview.setRigEnabled(false);
+    preview.setClip(rest);
+    preview.setBodyMode("human");
+    preview.setFaceVisible(false); // the body keeps its own head
+    preview.refreshBody();
+    preview.pause();
+
+    transport?.dispose();
+    transport = null;
+    timelineDock.innerHTML = disabledTransportHtml();
+
+    buildBodyPanel(name, bytes, mapped, scene);
+    if (mapped === 0) {
+      showError(`${name}: no VRM humanoid mapping found, using bone-name matching.`);
+    }
+  } catch (err) {
+    showError(`${name}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** The inert timeline placeholder shown when no clip is playable. */
+function disabledTransportHtml(): string {
+  return `
+    <div class="transport-overlay disabled" aria-disabled="true">
+      <div class="t-main">
+        <button class="t-btn t-play" disabled aria-label="Play/pause">${ICONS.play}</button>
+        <div class="t-timeline" aria-disabled="true"></div>
+        <span class="t-time">0:00.00 / 0:00.00</span>
+      </div>
+    </div>
+  `;
+}
+
+/** The reduced dock/editbar for a body-only (no recording) session. */
+function buildBodyPanel(name: string, bytes: ArrayBuffer, mappedBones: number, scene?: SceneFile) {
+  const vrm = isVrmBody(bytes);
+  const meta = parseVrmMeta(bytes);
+  const settings = (scene?.settings ?? {}) as Record<string, unknown>;
+  const stripDefault = settings.shogunStrip === undefined ? true : !!settings.shogunStrip;
+  const outDefault = typeof settings.outName === "string" && settings.outName
+    ? settings.outName
+    : `${sanitizeFilename(name.replace(/\.(vrm|glb)$/i, ""))}-shogun`;
+
+  editbar.innerHTML = `<span class="eb-hint">Body loaded: ${name}. Drop a recording or FBX to animate it, or export a Shogun target rig.</span>`;
+
+  const metaRows = meta
+    ? [
+        ["VRM", meta.version === "1.0" ? "1.0" : "0.x"],
+        ...(meta.title ? [["Title", meta.title]] : []),
+        ...(meta.author ? [["Author", meta.author]] : []),
+      ]
+    : [["Type", "GLB (no VRM metadata)"]];
+  const rows: [string, string][] = [
+    ["File", name],
+    ...(metaRows as [string, string][]),
+    ["Humanoid bones", mappedBones ? String(mappedBones) : "name-matched"],
+    ["Meshes", "…"],
+    ["Vertices", "…"],
+  ];
+
+  dock.innerHTML = `
+    <nav class="dock-tabs" role="tablist">
+      <button class="dock-tab active" data-tab="clean">Clean</button>
+      <button class="dock-tab" data-tab="rig">Rig</button>
+      <button class="dock-tab" data-tab="export">Export</button>
+      <button class="dock-tab" data-tab="info">Info</button>
+    </nav>
+    <div class="dock-body">
+      <div class="tab active" id="tab-clean"><p class="note">Needs a recording. Drop a <code>.wanim</code> or <code>.fbx</code> to animate this body.</p></div>
+      <div class="tab" id="tab-rig"><p class="note">Needs a recording. Drop a <code>.wanim</code> or <code>.fbx</code> to pose this body.</p></div>
+      <div class="tab" id="tab-export">
+        <h4 class="group">Shogun target rig <span class="hint-i" title="A static, world-aligned skeleton plus skinned mesh built straight from your loaded VRM body, for use as a Vicon Shogun retarget target. No animation is baked in.">ⓘ</span></h4>
+        <label class="field">
+          <span>Export name</span>
+          <input id="bodyOutName" class="eb-name" type="text" spellcheck="false" />
+        </label>
+        <label class="field">
+          <span>Strip spring bones</span>
+          <input id="shogunStrip" type="checkbox" ${stripDefault ? "checked" : ""} title="Drops VRM spring bones (hair, skirt, tail, accessories) and re-weights them onto their nearest kept parent. Shogun can't use them." />
+        </label>
+        <div class="rig-row">
+          <button id="shogunDl" class="button ghost">Shogun target rig (.fbx)</button>
+        </div>
+        <p id="shogunNote" class="clean-stats"></p>
+      </div>
+      <div class="tab" id="tab-info">
+        <h2>${name}</h2>
+        <dl class="stats">${rows.map(([k, v]) => `<div><dt>${k}</dt><dd id="bodyStat-${k.replace(/\s+/g, "")}">${v}</dd></div>`).join("")}</dl>
+        <button id="sceneSave" class="button ghost" title="Bundles this body and its export settings into one .scene.json.">Save scene…</button>
+        <button id="reset" class="button ghost">Load another file</button>
+      </div>
+    </div>
+  `;
+
+  // Tab switching.
+  const tabBtns = Array.from(dock.querySelectorAll<HTMLButtonElement>(".dock-tab"));
+  for (const b of tabBtns) {
+    b.addEventListener("click", () => {
+      for (const x of tabBtns) x.classList.toggle("active", x === b);
+      for (const el of dock.querySelectorAll(".tab")) el.classList.toggle("active", el.id === `tab-${b.dataset.tab}`);
+    });
+  }
+
+  const outNameEl = document.getElementById("bodyOutName") as HTMLInputElement;
+  outNameEl.value = outDefault;
+  const outBase = () => sanitizeFilename(outNameEl.value.trim()) || outDefault;
+  const shogunStripChk = document.getElementById("shogunStrip") as HTMLInputElement;
+  const shogunDlBtn = document.getElementById("shogunDl") as HTMLButtonElement;
+  const shogunNote = document.getElementById("shogunNote") as HTMLParagraphElement;
+  shogunDlBtn.disabled = !vrm;
+  shogunNote.textContent = vrm ? `Ready from ${name}.` : "The loaded body has no VRM data. Load a .vrm to export a Shogun rig.";
+
+  async function doShogun() {
+    if (!vrm) return;
+    shogunDlBtn.disabled = true;
+    shogunDlBtn.textContent = "Generating…";
+    await new Promise((r) => setTimeout(r, 16));
+    try {
+      const res = await exportShogunFbx(bytes, { stripSprings: shogunStripChk.checked });
+      downloadBytes(`${outBase()}.fbx`, new TextEncoder().encode(res.fbx));
+      const stripped = res.strippedSprings ? `, ${res.springBoneCount} spring bones stripped` : "";
+      shogunNote.textContent = `Exported ${res.boneCount} bones${stripped}.`;
+    } catch (err) {
+      showError(err instanceof Error ? err.message : String(err));
+    } finally {
+      shogunDlBtn.textContent = "Shogun target rig (.fbx)";
+      shogunDlBtn.disabled = !vrm;
+    }
+  }
+  shogunDlBtn.addEventListener("click", () => void doShogun());
+
+  // Scene save: body + export settings, no recording.
+  function sceneSettings(): Record<string, unknown> {
+    return { shogunStrip: shogunStripChk.checked, outName: outNameEl.value };
+  }
+  function saveScene(baseName?: string, forcePicker = false) {
+    const sc: SceneFile = {
+      magic: "wanimscene",
+      v: 4,
+      name,
+      source: "body",
+      settings: sceneSettings(),
+      body: { name, data: bytesToBase64(new Uint8Array(bytes)) },
+    };
+    const base = sanitizeFilename(baseName || name.replace(/\.(vrm|glb)$/i, "")) || "body";
+    void recent.saveScene(`${base}.scene.json`, new TextEncoder().encode(JSON.stringify(sc)), forcePicker);
+  }
+  function saveSceneAs() {
+    if (recent.supported()) { saveScene(undefined, true); return; }
+    const n = prompt("Save scene as (file name):", sanitizeFilename(name.replace(/\.(vrm|glb)$/i, "")));
+    if (n === null) return;
+    saveScene(n);
+  }
+  (document.getElementById("sceneSave") as HTMLButtonElement).addEventListener("click", () => saveScene());
+  (document.getElementById("reset") as HTMLButtonElement).addEventListener("click", () => {
+    errorEl.hidden = true;
+    bodyPanel = null;
+    userBodyBytes = null;
+    void setBodySource(null);
+    showEmptyEditor();
+    void clearLastSession();
+  });
+
+  bodyPanel = { saveScene: () => saveScene(), saveSceneAs, exportShogun: () => void doShogun(), isVrm: () => vrm };
+
+  // Fill mesh/vertex counts asynchronously (best-effort).
+  void fillBodyCounts();
+
+  async function fillBodyCounts() {
+    try {
+      const seed = defaultRestClip();
+      const joints = await getBodyJoints(seed.parents, seed.bindPos, seed.names);
+      const rest = retargetProportions(seed, joints);
+      const data = await buildBodyData(rest.parents, rest.bindPos, rest.names);
+      let verts = 0;
+      for (const m of data.meshes) verts += m.positions.length / 3;
+      const meshEl = document.getElementById("bodyStat-Meshes");
+      const vertEl = document.getElementById("bodyStat-Vertices");
+      if (meshEl) meshEl.textContent = String(data.meshes.length);
+      if (vertEl) vertEl.textContent = verts.toLocaleString();
+    } catch { /* counts are best-effort */ }
   }
 }
 

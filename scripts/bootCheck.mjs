@@ -72,10 +72,54 @@ await page.waitForTimeout(2500);
 const staysEmpty = await page.$eval("#empty-state", (el) => !el.hidden);
 console.log("reload after reset: stays empty", staysEmpty);
 
+// 5. Body-only session: a VRM with no recording gives a working session with
+//    the Shogun export; dropping a recording on top upgrades in place.
+const VRM = process.env.VRM_SAMPLE ?? `${process.env.USERPROFILE ?? ""}\\Downloads\\Flayon.vrm`;
+let bodyOnlyOk = true;
+try {
+  readFileSync(VRM);
+} catch {
+  console.log("body-only: SKIP (no VRM sample at", VRM + ")");
+}
+if (bodyOnlyOk) {
+  try {
+    await page.setInputFiles("#file-input", {
+      name: VRM.split(/[\\/]/).pop(),
+      mimeType: "application/octet-stream",
+      buffer: readFileSync(VRM),
+    });
+    await page.waitForSelector("#shogunDl", { timeout: 30000, state: "attached" });
+    await page.click('.dock-tab[data-tab="export"]');
+    await page.waitForSelector("#shogunDl", { timeout: 5000, state: "visible" });
+    const promptHiddenBody = await page.$eval("#empty-state", (el) => el.hidden);
+    const transportStillOff = await page.$eval(".transport-overlay .t-play", (b) => b.disabled).catch(() => true);
+    const [dl] = await Promise.all([
+      page.waitForEvent("download", { timeout: 60000 }),
+      page.click("#shogunDl"),
+    ]);
+    const shogunName = dl.suggestedFilename();
+    // Upgrade in place: drop the recording, full session appears.
+    await page.setInputFiles("#file-input", {
+      name: WANIM.split(/[\\/]/).pop(),
+      mimeType: "application/octet-stream",
+      buffer: readFileSync(WANIM),
+    });
+    await page.waitForSelector("#dock .stats", { timeout: 30000, state: "attached" });
+    const upgradedTransport = await page.$eval(".transport-overlay .t-play", (b) => !b.disabled).catch(() => false);
+    console.log("body-only: prompt hidden", promptHiddenBody, "· transport off", transportStillOff,
+      "· shogun dl", JSON.stringify(shogunName), "· upgraded", upgradedTransport);
+    bodyOnlyOk = promptHiddenBody && transportStillOff && shogunName.endsWith("-shogun.fbx") && upgradedTransport;
+  } catch (e) {
+    console.log("body-only: FAILED", String(e));
+    bodyOnlyOk = false;
+  }
+}
+
 await page.screenshot({ path: "scripts/boot-shot.png" });
 console.log("errors:", errors.length ? errors : "none");
 await browser.close();
 const ok = bootEditor && bootCanvas && bootPrompt && bootMenus && noDropzone && transportDisabledEmpty
-  && missingKeys.length === 0 && promptGone && transportEnabled && restoredName && promptBack && staysEmpty && !errors.length;
+  && missingKeys.length === 0 && promptGone && transportEnabled && restoredName && promptBack && staysEmpty
+  && bodyOnlyOk && !errors.length;
 console.log(ok ? "OK" : "PROBE FAILED");
 process.exit(ok ? 0 : 1);

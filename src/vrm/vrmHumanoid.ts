@@ -76,6 +76,30 @@ function glbJson(arrayBuffer: ArrayBuffer): unknown | null {
   return null;
 }
 
+export interface VrmMeta {
+  version: "0.x" | "1.0";
+  title?: string;
+  author?: string;
+}
+
+/** Title/author from a VRM's meta block (either spec), or null for a plain GLB. */
+export function parseVrmMeta(arrayBuffer: ArrayBuffer): VrmMeta | null {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const json = glbJson(arrayBuffer) as any;
+  const ext = json?.extensions;
+  if (!ext) return null;
+  if (ext.VRMC_vrm) {
+    const meta = ext.VRMC_vrm.meta ?? {};
+    const authors: string[] = Array.isArray(meta.authors) ? meta.authors : [];
+    return { version: "1.0", title: meta.name, author: authors.join(", ") || undefined };
+  }
+  if (ext.VRM) {
+    const meta = ext.VRM.meta ?? {};
+    return { version: "0.x", title: meta.title, author: meta.author };
+  }
+  return null;
+}
+
 /** VRM humanoid bone name (camelCase) → Unity HumanBodyBones name. */
 function vrmBoneToUnity(vrmName: string, version: "0.x" | "1.0"): string | null {
   // VRM 1.0 thumb segments differ from Unity's naming.

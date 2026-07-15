@@ -17,6 +17,7 @@
     "rigCheck": "node scripts/rigCheck.mjs",
     "wanimCheck": "node scripts/wanimCheck.mjs",
     "shogunCheck": "node scripts/shogunCheck.mjs",
+    "fbxImportCheck": "node scripts/fbxImportCheck.mjs",
     "drive": "node scripts/driveApp.mjs",
     "bootcheck": "node scripts/bootCheck.mjs"
   },
