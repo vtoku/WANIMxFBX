@@ -20,6 +20,15 @@ export interface Prefs {
   cleanLimitWrists: boolean;
   cleanLimitForearm: boolean;
   cleanFixFeet: boolean;
+  // Viewport aids (aid strip + View menu share these)
+  aidPaths: boolean;
+  aidPathWindow: number;      // frames each side of the playhead
+  aidPathDots: boolean;
+  aidOnion: boolean;
+  aidOnionCount: number;      // ghosts each side
+  aidOnionStep: number;       // frames between ghosts
+  aidOnionOpacity: number;    // nearest ghost's opacity (0-1)
+  aidCleanPlay: boolean;      // hide handles/gizmo/dots while playing
   // Appearance
   uiScale: number;            // 0.85 | 1 | 1.15
   // Layout (persisted splitters + dock state)
@@ -44,6 +53,14 @@ const DEFAULTS: Prefs = {
   cleanLimitWrists: false,
   cleanLimitForearm: false,
   cleanFixFeet: false,
+  aidPaths: false,
+  aidPathWindow: 60,
+  aidPathDots: true,
+  aidOnion: false,
+  aidOnionCount: 3,
+  aidOnionStep: 5,
+  aidOnionOpacity: 0.45,
+  aidCleanPlay: false,
   uiScale: 1,
   dockWidth: 352,      // 22rem at scale 1
   timelineHeight: 0,   // 0 = auto (content height)

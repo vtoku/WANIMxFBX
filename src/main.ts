@@ -43,7 +43,8 @@ import { ICONS } from "./ui/icons.ts";
 import { buildMenuBar, type MenuDef, type MenuItem } from "./ui/menu.ts";
 import { keyFor, SHORTCUTS } from "./ui/shortcuts.ts";
 import { openShortcuts, openAbout, openPreferences as openPreferencesDialog } from "./ui/dialogs.ts";
-import { getPref, applyAppearance } from "./ui/prefs.ts";
+import { getPref, getPrefs, setPref, onPrefsChange, applyAppearance } from "./ui/prefs.ts";
+import { createAidStrip } from "./ui/aidstrip.ts";
 import { initLayout, setDockCollapsed, setLayoutSizes } from "./ui/layout.ts";
 import * as recent from "./ui/recent.ts";
 
@@ -300,6 +301,11 @@ const menuDefs: MenuDef[] = [
       { label: "Reset camera", action: () => preview?.resetCamera() },
       { label: "Frame character", enabled: hasClip, action: () => preview?.frameCharacter() },
       { label: "Toggle grid", checked: () => !!preview?.isGridVisible(), action: () => preview?.toggleGrid() },
+      { separator: true },
+      // Viewport aids — same prefs the aid strip reads, so they stay in sync.
+      { label: "Motion paths", checked: () => getPref("aidPaths"), action: () => setPref("aidPaths", !getPref("aidPaths")) },
+      { label: "Onion skin", checked: () => getPref("aidOnion"), action: () => setPref("aidOnion", !getPref("aidOnion")) },
+      { label: "Clean playback", checked: () => getPref("aidCleanPlay"), action: () => setPref("aidCleanPlay", !getPref("aidCleanPlay")) },
       { separator: true },
       { label: "Collapse dock", checked: () => getPref("dockCollapsed"), action: () => setDockCollapsed(dock, !getPref("dockCollapsed")) },
       { label: "Layout: Default", action: () => applyLayoutPreset("default") },
@@ -1476,6 +1482,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       }
       if (loaded?.display !== d) return; // reclean replaced the clip mid-bake
       d.bindPos = d.localPos.map((t) => t[0]);
+      preview.refreshAids(); // motion path/onion sample the arrays just rebaked
       preview.seek(preview.getTime()); // repose from the updated arrays
       saveRigCache();
     });
@@ -3831,6 +3838,16 @@ document.addEventListener("drop", (e) => {
 // first, which always wins.
 preview = new PreviewScene(viewport);
 (window as unknown as { __preview?: PreviewScene }).__preview = preview;
+// Viewport aids: strip + View menu both live on prefs; push them to the scene.
+function applyAidPrefs() {
+  const p = getPrefs();
+  preview?.setAid("paths", p.aidPaths, { pathWindow: p.aidPathWindow, pathDots: p.aidPathDots });
+  preview?.setAid("onion", p.aidOnion, { onionCount: p.aidOnionCount, onionStep: p.aidOnionStep, onionOpacity: p.aidOnionOpacity });
+  preview?.setAid("cleanPlay", p.aidCleanPlay);
+}
+createAidStrip(viewport);
+applyAidPrefs();
+onPrefsChange(applyAidPrefs);
 showEmptyEditor();
 void (async () => {
   const last = await loadLastSession();

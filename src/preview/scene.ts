@@ -17,6 +17,10 @@ import { BODY_HEAD_HEIGHT_M, BODY_HEAD_LIFT_M, BODY_HEAD_JOINT_Y } from "../conv
 const BG = 0x0e1014;
 /** DIO's green — the ghost overlay's identity color (fill, rim, lines). */
 const GHOST_GREEN = 0x3fd97a;
+/** Motion-path window hard cap (frames each side) — sizes the geometry. */
+const PATH_WINDOW_MAX = 300;
+const ONION_COOL = 0x4a9eff; // ghosts before the playhead
+const ONION_WARM = 0xffa14a; // ghosts after the playhead
 
 export interface PlaybackState {
   time: number;
@@ -405,7 +409,9 @@ export class PreviewScene {
     this.trimEnd = clip.duration;
     this.time = resume ? Math.min(resume.time, clip.duration) : 0;
     this.playing = resume ? resume.playing : true;
+    this.resetAidData(clip);
     this.applyPose(this.time);
+    this.applyAidVisibility();
     if (!resume) this.frameCamera();
     this.emitState();
   }
@@ -486,6 +492,7 @@ export class PreviewScene {
   private applyPose(time: number) {
     if (!this.boneRoot || !this.lines || !this.joints) return;
     this.updateGhost(time); // the ghost tracks the playhead even mid-drag
+    this.updateAids(time);  // motion path / onion skin track it too
     if (this.poseOverride) return; // live drag owns the pose right now
     this.sampleInto(time);
     this.redrawOverlays();
@@ -697,6 +704,311 @@ export class PreviewScene {
     this.ghostClip = null;
   }
 
+  // ---- viewport aids (motion path / onion skin / clean playback) -----------
+
+  private aidPaths = false;
+  private aidOnion = false;
+  private aidCleanPlay = false;
+  private pathWindow = 60;   // frames each side of the playhead
+  private pathDots = true;
+  private onionCount = 3;    // ghosts each side
+  private onionStep = 5;     // frames between ghosts
+  private onionOpacity = 0.45;
+
+  private pathLine: THREE.Line | null = null;
+  private pathPoints: THREE.Points | null = null;
+  /** World positions of the path bone, whole clip, filled lazily per frame. */
+  private pathCache: Float32Array | null = null;
+  private pathCacheOk: Uint8Array | null = null;
+  private pathBone = -1;
+  private pathFrame = -1; // window center the geometry currently shows
+  private onionMeshes: THREE.LineSegments[] = []; // [before...:cool, after...:warm]
+  private onionFrame = -1;
+  // Zero-alloc FK scratch: bone order (parents first — the Unity array is NOT
+  // topologically sorted) + flat world pos/quat, rebuilt per setClip.
+  private fkOrder: number[] = [];
+  private fkPos = new Float32Array(0);
+  private fkQuat = new Float32Array(0);
+
+  /** Turn a preview aid on/off and/or push its parameters. Idempotent. */
+  setAid(
+    name: "paths" | "onion" | "cleanPlay",
+    on: boolean,
+    params?: { pathWindow?: number; pathDots?: boolean; onionCount?: number; onionStep?: number; onionOpacity?: number },
+  ) {
+    if (name === "paths") {
+      const win = Math.max(10, Math.min(PATH_WINDOW_MAX, Math.round(params?.pathWindow ?? this.pathWindow)));
+      const dots = params?.pathDots ?? this.pathDots;
+      if (on === this.aidPaths && win === this.pathWindow && dots === this.pathDots) return;
+      this.aidPaths = on;
+      this.pathWindow = win;
+      this.pathDots = dots;
+      this.pathFrame = -1;
+      if (this.pathLine) this.pathLine.visible = on;
+    } else if (name === "onion") {
+      const count = Math.max(1, Math.min(6, Math.round(params?.onionCount ?? this.onionCount)));
+      const step = Math.max(1, Math.min(30, Math.round(params?.onionStep ?? this.onionStep)));
+      const opacity = Math.max(0.05, Math.min(0.9, params?.onionOpacity ?? this.onionOpacity));
+      if (on === this.aidOnion && count === this.onionCount && step === this.onionStep && opacity === this.onionOpacity) return;
+      this.aidOnion = on;
+      this.onionCount = count;
+      this.onionStep = step;
+      this.onionOpacity = opacity;
+      this.disposeOnion(); // ghost count/opacity changed — rebuild lazily
+    } else {
+      if (on === this.aidCleanPlay) return;
+      this.aidCleanPlay = on;
+    }
+    if (!this.aidPaths) this.disposePath();
+    if (!this.aidOnion) this.disposeOnion();
+    this.updateAids(this.time);
+    this.applyAidVisibility();
+  }
+
+  /** The display clip's motion data changed in place (rig rebake) — resample. */
+  refreshAids() {
+    this.pathCacheOk?.fill(0);
+    this.pathFrame = -1;
+    this.onionFrame = -1;
+  }
+
+  /** True while clean playback is actively hiding the posing overlays. */
+  private overlaysHidden(): boolean {
+    return this.aidCleanPlay && this.playing;
+  }
+
+  /** Apply clean-playback visibility to handles, gizmo, and path dots. */
+  private applyAidVisibility() {
+    const hide = this.overlaysHidden();
+    this.restyleHandles();
+    this.updateRigHandles();
+    if (this.gizmo) this.gizmo.getHelper().visible = !hide;
+    if (this.pathPoints) this.pathPoints.visible = this.aidPaths && this.pathDots && !hide;
+  }
+
+  /** Rebuild the FK scratch (bone order + flat buffers) for a new clip. */
+  private resetAidData(clip: ConvertedClip) {
+    const n = clip.parents.length;
+    const order: number[] = [];
+    const seen = new Array<boolean>(n).fill(false);
+    const visit = (i: number): void => {
+      if (seen[i]) return;
+      seen[i] = true;
+      if (clip.parents[i] >= 0) visit(clip.parents[i]);
+      order.push(i);
+    };
+    for (let i = 0; i < n; i++) visit(i);
+    this.fkOrder = order;
+    if (this.fkPos.length !== n * 3) {
+      this.fkPos = new Float32Array(n * 3);
+      this.fkQuat = new Float32Array(n * 4);
+    }
+    if (!this.pathCache || this.pathCache.length !== clip.times.length * 3) {
+      this.pathCache = new Float32Array(clip.times.length * 3);
+      this.pathCacheOk = new Uint8Array(clip.times.length);
+    } else {
+      this.pathCacheOk!.fill(0);
+    }
+    this.pathBone = -1;
+    this.pathFrame = -1;
+    this.onionFrame = -1;
+    this.disposeOnion(); // link count may differ on a new recording
+  }
+
+  /** FK one frame of the clip into fkPos/fkQuat. No allocations. */
+  private fkFrame(clip: ConvertedClip, f: number) {
+    const wp = this.fkPos;
+    const wq = this.fkQuat;
+    for (const i of this.fkOrder) {
+      const lp = clip.localPos[i][f];
+      const lq = clip.localQuat[i][f];
+      let qx = lq[0], qy = lq[1], qz = lq[2], qw = lq[3];
+      // Degenerate quats read as identity (matches fk.ts safeQuat).
+      if (qx * qx + qy * qy + qz * qz + qw * qw < 0.25) { qx = 0; qy = 0; qz = 0; qw = 1; }
+      const p = clip.parents[i];
+      if (p < 0) {
+        wp[i * 3] = lp[0]; wp[i * 3 + 1] = lp[1]; wp[i * 3 + 2] = lp[2];
+        wq[i * 4] = qx; wq[i * 4 + 1] = qy; wq[i * 4 + 2] = qz; wq[i * 4 + 3] = qw;
+        continue;
+      }
+      const px = wq[p * 4], py = wq[p * 4 + 1], pz = wq[p * 4 + 2], pw = wq[p * 4 + 3];
+      // world pos = parent pos + parentQuat * local pos
+      const tx = 2 * (py * lp[2] - pz * lp[1]);
+      const ty = 2 * (pz * lp[0] - px * lp[2]);
+      const tz = 2 * (px * lp[1] - py * lp[0]);
+      wp[i * 3] = wp[p * 3] + lp[0] + pw * tx + (py * tz - pz * ty);
+      wp[i * 3 + 1] = wp[p * 3 + 1] + lp[1] + pw * ty + (pz * tx - px * tz);
+      wp[i * 3 + 2] = wp[p * 3 + 2] + lp[2] + pw * tz + (px * ty - py * tx);
+      // world quat = parentQuat * localQuat
+      wq[i * 4] = pw * qx + px * qw + py * qz - pz * qy;
+      wq[i * 4 + 1] = pw * qy - px * qz + py * qw + pz * qx;
+      wq[i * 4 + 2] = pw * qz + px * qy - py * qx + pz * qw;
+      wq[i * 4 + 3] = pw * qw - px * qx - py * qy - pz * qz;
+    }
+  }
+
+  /** Drive the enabled aids for the frame under `time`. */
+  private updateAids(time: number) {
+    if (!this.clip) return;
+    const f = this.locate(this.clip, time).i;
+    if (this.aidPaths) this.updatePath(f);
+    if (this.aidOnion) this.updateOnion(f);
+  }
+
+  /** The bone the motion path follows: selected effector, else the hips. */
+  private pathBoneIndex(): number {
+    if (!this.clip) return -1;
+    const id = this.rigSelected ?? "hips";
+    const def = EFFECTORS.find((e) => e.id === id);
+    let idx = def ? this.clip.names.indexOf(def.bone) : -1;
+    if (idx < 0) idx = this.clip.names.indexOf("Hips");
+    return idx < 0 ? 0 : idx;
+  }
+
+  /** Create the path Line/Points lazily. Returns true when freshly created. */
+  private ensurePathObjects(): boolean {
+    if (this.pathLine) return false;
+    // One geometry, capacity for the largest window; Line + Points share it
+    // (and its draw range), so both update from a single position write.
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(new Float32Array((PATH_WINDOW_MAX * 2 + 1) * 3), 3),
+    );
+    this.pathLine = new THREE.Line(
+      geo,
+      new THREE.LineBasicMaterial({ color: 0xffaa33, transparent: true, opacity: 0.85, depthTest: false, depthWrite: false }),
+    );
+    this.pathLine.renderOrder = 7; // over the body, under the ghost/rig layers
+    this.pathLine.frustumCulled = false;
+    this.pathPoints = new THREE.Points(
+      geo,
+      new THREE.PointsMaterial({ color: 0xffaa33, size: 4, sizeAttenuation: false, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false }),
+    );
+    this.pathPoints.renderOrder = 7;
+    this.pathPoints.frustumCulled = false;
+    this.scene.add(this.pathLine, this.pathPoints);
+    return true;
+  }
+
+  private disposePath() {
+    if (!this.pathLine) return;
+    this.scene.remove(this.pathLine, this.pathPoints!);
+    this.pathLine.geometry.dispose(); // shared with pathPoints
+    (this.pathLine.material as THREE.Material).dispose();
+    (this.pathPoints!.material as THREE.Material).dispose();
+    this.pathLine = null;
+    this.pathPoints = null;
+    this.pathFrame = -1;
+  }
+
+  private updatePath(f: number) {
+    const clip = this.clip;
+    if (!clip || !this.pathCache || !this.pathCacheOk) return;
+    const bone = this.pathBoneIndex();
+    const boneChanged = bone !== this.pathBone;
+    if (boneChanged) {
+      this.pathBone = bone;
+      this.pathCacheOk.fill(0);
+      this.pathFrame = -1;
+    }
+    if (f === this.pathFrame) return;
+    this.pathFrame = f;
+    if (this.ensurePathObjects() || boneChanged) {
+      const c = effectorColor(this.rigSelected ?? "hips");
+      (this.pathLine!.material as THREE.LineBasicMaterial).color.set(c);
+      (this.pathPoints!.material as THREE.PointsMaterial).color.set(c);
+    }
+    const last = clip.times.length - 1;
+    const lo = Math.max(0, f - this.pathWindow);
+    const hi = Math.min(last, f + this.pathWindow);
+    // Fill any uncached frames in the window (during playback only the frames
+    // newly entering the window FK; a seek fills the whole window once).
+    for (let i = lo; i <= hi; i++) {
+      if (this.pathCacheOk[i]) continue;
+      this.fkFrame(clip, i);
+      this.pathCache[i * 3] = this.fkPos[bone * 3];
+      this.pathCache[i * 3 + 1] = this.fkPos[bone * 3 + 1];
+      this.pathCache[i * 3 + 2] = this.fkPos[bone * 3 + 2];
+      this.pathCacheOk[i] = 1;
+    }
+    const attr = this.pathLine!.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const arr = attr.array as Float32Array;
+    arr.set(this.pathCache.subarray(lo * 3, (hi + 1) * 3), 0);
+    attr.needsUpdate = true;
+    this.pathLine!.geometry.setDrawRange(0, hi - lo + 1);
+    this.pathLine!.visible = true;
+    this.pathPoints!.visible = this.pathDots && !this.overlaysHidden();
+  }
+
+  private ensureOnion() {
+    if (this.onionMeshes.length || !this.links.length) return;
+    for (let side = 0; side < 2; side++) {
+      for (let k = 1; k <= this.onionCount; k++) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute(
+          "position",
+          new THREE.Float32BufferAttribute(new Float32Array(this.links.length * 6), 3),
+        );
+        const mesh = new THREE.LineSegments(
+          geo,
+          new THREE.LineBasicMaterial({
+            color: side === 0 ? ONION_COOL : ONION_WARM, // cool before, warm after
+            transparent: true,
+            opacity: this.onionOpacity * (1 - (k - 1) / this.onionCount), // fades with distance
+            depthTest: false,
+            depthWrite: false,
+          }),
+        );
+        mesh.renderOrder = 7;
+        mesh.frustumCulled = false;
+        this.scene.add(mesh);
+        this.onionMeshes.push(mesh);
+      }
+    }
+    this.onionFrame = -1;
+  }
+
+  private disposeOnion() {
+    for (const m of this.onionMeshes) {
+      this.scene.remove(m);
+      m.geometry.dispose();
+      (m.material as THREE.Material).dispose();
+    }
+    this.onionMeshes = [];
+    this.onionFrame = -1;
+  }
+
+  private updateOnion(f: number) {
+    const clip = this.clip;
+    if (!clip) return;
+    if (f === this.onionFrame) return; // only recompute on frame crossings
+    this.onionFrame = f;
+    this.ensureOnion();
+    const last = clip.times.length - 1;
+    for (let m = 0; m < this.onionMeshes.length; m++) {
+      const before = m < this.onionCount;
+      const k = (m % this.onionCount) + 1;
+      const g = before ? f - k * this.onionStep : f + k * this.onionStep;
+      const mesh = this.onionMeshes[m];
+      if (g < 0 || g > last) { mesh.visible = false; continue; }
+      mesh.visible = true;
+      this.fkFrame(clip, g);
+      const attr = mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const arr = attr.array as Float32Array;
+      for (let l = 0; l < this.links.length; l++) {
+        const [a, b] = this.links[l];
+        arr[l * 6] = this.fkPos[a * 3];
+        arr[l * 6 + 1] = this.fkPos[a * 3 + 1];
+        arr[l * 6 + 2] = this.fkPos[a * 3 + 2];
+        arr[l * 6 + 3] = this.fkPos[b * 3];
+        arr[l * 6 + 4] = this.fkPos[b * 3 + 1];
+        arr[l * 6 + 5] = this.fkPos[b * 3 + 2];
+      }
+      attr.needsUpdate = true;
+    }
+  }
+
   // ---- control rig -------------------------------------------------------
 
   setRigCallbacks(cbs: RigCallbacks | null) {
@@ -749,9 +1061,10 @@ export class PreviewScene {
   /** Handle look for every state: idle/hover/selected, dimmed while dragging. */
   private restyleHandles() {
     const dragging = this.gizmoDragging || !!this.directDrag?.active;
+    const cleanHide = this.overlaysHidden(); // clean playback: no handles while playing
     for (const [id, mesh] of this.rigHandles) {
       const mat = mesh.material as THREE.MeshBasicMaterial;
-      if (this.rigFkOnly.has(id)) { mesh.visible = false; continue; } // FK-only: no handle
+      if (cleanHide || this.rigFkOnly.has(id)) { mesh.visible = false; continue; } // FK-only: no handle
       mesh.visible = true;
       const movable = EFFECTORS.find((e) => e.id === id)?.canMove;
       const sel = id === this.rigSelected;
@@ -839,6 +1152,7 @@ export class PreviewScene {
     } else {
       this.gizmo?.detach();
     }
+    this.updateAids(this.time); // the motion path follows the selection
     this.rigCbs?.onSelect(effector);
   }
 
@@ -952,7 +1266,7 @@ export class PreviewScene {
     }
     for (const [id, mesh] of this.poleHandles) {
       // No pole handle for a pure-FK limb (nothing to bend).
-      mesh.visible = !this.rigFkOnly.has(id) && !(this.poleDrag && this.poleDrag.active && this.poleDrag.effector !== id);
+      mesh.visible = !this.overlaysHidden() && !this.rigFkOnly.has(id) && !(this.poleDrag && this.poleDrag.active && this.poleDrag.effector !== id);
       if (!mesh.visible) continue;
       const p = this.polePosition(id);
       if (p) mesh.position.set(p[0], p[1], p[2]);
@@ -1134,11 +1448,13 @@ export class PreviewScene {
       this.time = this.trimStart;
     }
     this.playing = true;
+    this.applyAidVisibility(); // clean playback hides overlays while playing
     this.emitState();
   }
 
   pause() {
     this.playing = false;
+    this.applyAidVisibility();
     this.emitState();
   }
 
@@ -1155,6 +1471,8 @@ export class PreviewScene {
 
   private clearClip() {
     this.detachRig();
+    this.disposePath(); // aids keep their on/off state; objects rebuild lazily
+    this.disposeOnion();
     this.poseOverride = null;
     this.clearBody();
     if (this.boneRoot) {
