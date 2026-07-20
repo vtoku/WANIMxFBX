@@ -25,6 +25,16 @@ export interface DenseModel {
   channels: DenseChannel[];
 }
 
+/** Right-click info for Channels mode (dense curves — a span, not keys). */
+export interface ChannelsContextInfo {
+  x: number;
+  y: number;
+  /** Time under the cursor. */
+  time: number;
+  /** Band-selected span (frame-snapped), or null when none. */
+  span: { t0: number; t1: number } | null;
+}
+
 /** Host hooks for Channels mode (dense motion curves). */
 export interface ChannelsConfig {
   groups: ChannelGroup[];
@@ -36,6 +46,8 @@ export interface ChannelsConfig {
   onSelect(bones: Set<string>): void;
   /** Click-empty seek (Channels mode has no keys to edit). */
   onSeek(t: number): void;
+  /** Right-click: host shows the scoped-filter menu for the span/cursor. */
+  onContext(info: ChannelsContextInfo): void;
 }
 
 export interface CurveKey {
@@ -116,6 +128,8 @@ export class CurveView {
   private selected = new Set<string>();
   /** Marquee rectangle while band-selecting, in canvas coordinates. */
   private band: { x0: number; y0: number; x1: number; y1: number } | null = null;
+  /** Channels-mode band selection: a time span for scoped filters. */
+  private chanSpan: { t0: number; t1: number } | null = null;
   private ro: ResizeObserver;
   /** Shared zoom/pan mapping; when set, time->x goes through the view range. */
   private tm: TimeMap | null = null;
@@ -200,9 +214,33 @@ export class CurveView {
         return;
       }
       if (e.button !== 0) return;
-      // Channels mode is view-only: click-empty seeks, no key editing.
+      // Channels mode: drag = band-select a time span (scoped-filter target);
+      // a still click seeks and clears the span. No key editing here.
       if (this.mode === "channels") {
-        this.channels?.onSeek(this.timeAt(e));
+        e.preventDefault();
+        const r = this.canvas.getBoundingClientRect();
+        const x0 = e.clientX - r.left;
+        const move = (ev: PointerEvent) => {
+          this.band = { x0, y0: 0, x1: ev.clientX - r.left, y1: HEIGHT };
+          this.draw();
+        };
+        const up = (ev: PointerEvent) => {
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", up);
+          const x1 = ev.clientX - r.left;
+          if (Math.abs(x1 - x0) > 3) {
+            const tA = this.snapToFrame(this.timeAtX(Math.min(x0, x1), r.width));
+            const tB = this.snapToFrame(this.timeAtX(Math.max(x0, x1), r.width));
+            if (tB - tA > 1e-6) this.chanSpan = { t0: tA, t1: tB };
+          } else {
+            this.chanSpan = null;
+            this.channels?.onSeek(this.timeAtX(x1, r.width));
+          }
+          this.band = null;
+          this.draw();
+        };
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", up);
         return;
       }
       if (!this.model || !this.cbs) return;
@@ -286,7 +324,16 @@ export class CurveView {
     }, { passive: false });
     this.canvas.addEventListener("contextmenu", (e) => {
       e.preventDefault();
-      if (this.mode === "channels" || !this.model || !this.cbs) return;
+      if (this.mode === "channels") {
+        this.channels?.onContext({
+          x: e.clientX,
+          y: e.clientY,
+          time: this.timeAt(e),
+          span: this.chanSpan ? { ...this.chanSpan } : null,
+        });
+        return;
+      }
+      if (!this.model || !this.cbs) return;
       // Right-click on an unselected key focuses it first.
       const hit = this.pickKey(e);
       if (hit && !this.selected.has(this.refOf(hit.ch, hit.key))) {
@@ -373,9 +420,16 @@ export class CurveView {
     if (this.mode === "channels") this.refreshDense();
   }
 
+  /** Drop the Channels-mode band selection (host menu "Clear selection"). */
+  clearChannelSpan() {
+    this.chanSpan = null;
+    this.draw();
+  }
+
   setMode(m: "corrections" | "channels") {
     if (m === "channels" && !this.channels) return;
     this.mode = m;
+    this.chanSpan = null;
     this.syncSideUi();
     this.refreshDense();
     this.fitScale();
@@ -460,9 +514,26 @@ export class CurveView {
   }
   private timeAt(e: PointerEvent): number {
     const r = this.canvas.getBoundingClientRect();
-    const frac = (e.clientX - r.left) / r.width;
+    return this.timeAtX(e.clientX - r.left, r.width);
+  }
+  private timeAtX(px: number, width: number): number {
+    const frac = px / Math.max(1, width);
     if (this.tm) return Math.max(0, Math.min(this.tm.duration, this.tm.timeAtFrac(frac)));
     return Math.max(0, Math.min(this.model?.duration ?? 0, frac * (this.model?.duration ?? 0)));
+  }
+  /** Snap a playback time to the nearest dense-model frame (if loaded). */
+  private snapToFrame(t: number): number {
+    const times = this.dense?.times;
+    if (!times || !times.length) return t;
+    const off = times[0];
+    let lo = 0, hi = times.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (times[mid] - off < t) lo = mid + 1; else hi = mid;
+    }
+    const a = times[Math.max(0, lo - 1)] - off;
+    const b = times[lo] - off;
+    return t - a <= b - t ? a : b;
   }
   private pickKey(e: PointerEvent): { ch: CurveChannel; key: CurveKey } | null {
     if (!this.model) return null;
@@ -524,7 +595,11 @@ export class CurveView {
     const g = this.ctx;
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, w, HEIGHT);
-    if (this.mode === "channels") { this.drawDense(g, w); return; }
+    if (this.mode === "channels") {
+      this.drawDense(g, w);
+      this.drawBandRect(g);
+      return;
+    }
     if (!this.model) return;
 
     // Value grid: one zero line per group in play (pos = dashed, rot = solid);
@@ -588,20 +663,7 @@ export class CurveView {
       }
     }
 
-    // Marquee band while drag-selecting.
-    if (this.band) {
-      const bx = Math.min(this.band.x0, this.band.x1);
-      const by = Math.min(this.band.y0, this.band.y1);
-      const bw = Math.abs(this.band.x1 - this.band.x0);
-      const bh = Math.abs(this.band.y1 - this.band.y0);
-      g.fillStyle = "rgba(120,170,255,0.12)";
-      g.fillRect(bx, by, bw, bh);
-      g.strokeStyle = "rgba(255,255,255,0.6)";
-      g.lineWidth = 1;
-      g.setLineDash([4, 3]);
-      g.strokeRect(bx + 0.5, by + 0.5, bw, bh);
-      g.setLineDash([]);
-    }
+    this.drawBandRect(g);
 
     // Playhead.
     g.strokeStyle = "#ff5a5a";
@@ -618,6 +680,22 @@ export class CurveView {
     g.fillText(this.model.title + readout + selCount, 34, PAD_TOP);
   }
 
+  /** Marquee band while drag-selecting (both modes). */
+  private drawBandRect(g: CanvasRenderingContext2D) {
+    if (!this.band) return;
+    const bx = Math.min(this.band.x0, this.band.x1);
+    const by = Math.min(this.band.y0, this.band.y1);
+    const bw = Math.abs(this.band.x1 - this.band.x0);
+    const bh = Math.abs(this.band.y1 - this.band.y0);
+    g.fillStyle = "rgba(120,170,255,0.12)";
+    g.fillRect(bx, by, bw, bh);
+    g.strokeStyle = "rgba(255,255,255,0.6)";
+    g.lineWidth = 1;
+    g.setLineDash([4, 3]);
+    g.strokeRect(bx + 0.5, by + 0.5, bw, bh);
+    g.setLineDash([]);
+  }
+
   /** True when there's something to show: layer keys OR channels configured. */
   available(): boolean {
     return (this.model?.channels.some((c) => c.keys.length > 0) ?? false) || !!this.channels;
@@ -629,6 +707,19 @@ export class CurveView {
   // per-frame vertices. Compare ghost (uncleaned source) draws behind.
   private drawDense(g: CanvasRenderingContext2D, w: number) {
     const model = this.dense;
+    // Band-selected span (scoped-filter target) behind everything.
+    if (this.chanSpan) {
+      const sx0 = this.x(this.chanSpan.t0);
+      const sx1 = this.x(this.chanSpan.t1);
+      g.fillStyle = "rgba(120,170,255,0.10)";
+      g.fillRect(sx0, 0, sx1 - sx0, HEIGHT);
+      g.strokeStyle = "rgba(120,170,255,0.45)";
+      g.lineWidth = 1;
+      g.beginPath();
+      g.moveTo(sx0 + 0.5, 0); g.lineTo(sx0 + 0.5, HEIGHT);
+      g.moveTo(sx1 + 0.5, 0); g.lineTo(sx1 + 0.5, HEIGHT);
+      g.stroke();
+    }
     // Zero lines per group in play.
     g.font = "10px system-ui, sans-serif";
     for (const group of ["pos", "rot"] as const) {

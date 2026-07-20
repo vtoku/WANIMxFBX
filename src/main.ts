@@ -2737,31 +2737,40 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       `<p class="hint">Estimate at ${redBody.value}° body / ${redFinger.value}° finger. To apply, add a "Key reduce" filter (Filters section) scoped to the bones + range you want.</p>`;
   });
 
-  filterAddBtn.addEventListener("click", () => {
-    const trim = transport?.getTrim();
-    if (!trim || !loaded) return;
+  /** Push a scoped CleanOp for the current channel selection over `span`.
+   * Shared by the Filters panel button and the Channels-mode band menu. */
+  function addCleanOpScoped(filter: CleanFilter, span: { t0: number; t1: number }): boolean {
+    if (!loaded) return false;
     if (!channelSelection.size) {
       showError("Select the bones first: open the Rig timeline's Channels view and pick channels (a group or single fingers).");
-      return;
+      return false;
     }
-    if (trim.end - trim.start > loaded.display.duration - 0.05) {
-      filterHintEl.textContent = "Tip: set the trim handles around a section to scope the filter tighter.";
-    } else {
-      filterHintEl.textContent = "";
-    }
-    const filter = filterTypeSel.value as CleanFilter;
-    const value = Number(filterParamEl.value);
+    // The band menu applies whatever the param input holds when its type
+    // matches, else that filter's default.
+    const value = filterTypeSel.value === filter ? Number(filterParamEl.value) : FILTER_DEFAULT[filter].value;
     pushHistory();
     cleanOps.push({
       id: `op${Date.now().toString(36)}`,
       bones: [...channelSelection],
-      range: { t0: trim.start, t1: trim.end },
+      range: { t0: span.t0, t1: span.t1 },
       filter,
       params: opParams(filter, value),
       enabled: true,
     });
     renderFilters();
     void reclean();
+    return true;
+  }
+
+  filterAddBtn.addEventListener("click", () => {
+    const trim = transport?.getTrim();
+    if (!trim || !loaded) return;
+    if (trim.end - trim.start > loaded.display.duration - 0.05) {
+      filterHintEl.textContent = "Tip: set the trim handles around a section (or band-drag on the Channels curves) to scope the filter tighter.";
+    } else {
+      filterHintEl.textContent = "";
+    }
+    addCleanOpScoped(filterTypeSel.value as CleanFilter, { t0: trim.start, t1: trim.end });
   });
 
   (document.getElementById("rigReduce") as HTMLButtonElement).addEventListener("click", () => {
@@ -3156,6 +3165,30 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       renderFilters();
     },
     onSeek: (t) => { preview?.pause(); preview?.seek(t); },
+    onContext: (info) => {
+      const trim = transport?.getTrim();
+      const span = info.span ?? (trim ? { t0: trim.start, t1: trim.end } : null);
+      if (!span) return;
+      const where = info.span ? "selection" : "trim range";
+      const FILTER_ITEMS: Array<[CleanFilter, string]> = [
+        ["butterworth", "Butterworth"],
+        ["smooth", "Moving-average"],
+        ["despike", "Despike"],
+        ["reduce", "Key reduce"],
+      ];
+      const items: Array<{ label: string; action?: () => void; disabled?: boolean }> = FILTER_ITEMS.map(([f, name]) => ({
+        label: `${name} → ${where}`,
+        action: () => { addCleanOpScoped(f, span); },
+      }));
+      if (info.span) {
+        const s = info.span;
+        items.push(
+          { label: "Set trim to selection", action: () => transport?.setTrim(s.t0, s.t1) },
+          { label: "Clear selection", action: () => transport?.curveView.clearChannelSpan() },
+        );
+      }
+      showCtxMenu(info.x, info.y, items);
+    },
   };
   function wireChannels() {
     transport?.setChannels(channelsConfig);
