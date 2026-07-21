@@ -128,15 +128,28 @@ you change them.
 Retires: the Export tab; the Rig-tab key-reduction analyzer (it moves into
 the Export dialog next to the tolerances it informs).
 
-### 5. Editbar dissolves
+### 5. Editbar becomes a real app TOOLBAR
 
-- Undo/Redo → already in Edit menu + shortcuts; drop the buttons (or keep
-  two icons in the topbar if testing shows they're missed).
-- Gizmo move/rotate/space + Hold-original + Ghost → a slim viewport overlay
-  toolbar (top-left of the stage, mirroring the aid strip at top-right).
-  These are stage tools; they belong on the stage.
-- Name/format/Download → topbar right (always visible, replaces the version
-  text position; version moves to Help → About).
+One icon toolbar directly under the menu bar — consistent 26px stroke-icon
+buttons in labeled groups with separators, every button also a menu item and
+a shortcut (toolbar = fast path, never the only path):
+
+```
+[Open][Save] | [Undo][Redo] | [Move][Rotate][Local] | [Key pose][Auto-key] |
+[Hold][Ghost] | ······························ [name] [FBX ▾] [Download]
+```
+
+- **File group** — Open, Save scene.
+- **History group** — Undo, Redo (enabled state live).
+- **Manipulate group** — Move (W), Rotate (E), Local/World (Q); the active
+  tool is accent-highlighted.
+- **Keying group** — Key full pose at playhead, Auto-key toggle (moves out
+  of the Rig tab where it's currently buried).
+- **Compare group** — Hold-original, Ghost overlay.
+- **Export cluster** (right-aligned) — output name, format, Download.
+
+The viewport keeps only the AID strip (view aids are stage furniture); all
+ACTION tools live on the toolbar. Version text moves to Help → About.
 
 ### 6. Menus
 
@@ -167,7 +180,7 @@ for text and interactive glyphs.
 | **U1** | Inspector shell: selection router + Clip page (stats + global cleaning). Dock tabs collapse to one panel. | Info tab, Clean tab's global sections |
 | **U2** | Strip objects: selectable/editable lanes for filters, ranges, loop, warp, plants; inspector param pages with live preview. | all chip lists |
 | **U3** | Effector + layer pages; permanent layers rail with full controls. | Rig tab |
-| **U4** | Export dialog; editbar dissolution; viewport toolbar; Select menu. | Export tab, editbar |
+| **U4** | Export dialog; app toolbar (replaces the editbar); Select menu. | Export tab, old editbar |
 | **U5** | Visual-system pass, keyboard map, docs + screenshot refresh. | — |
 
 Migration guardrails: every phase keeps the element ids the check scripts
