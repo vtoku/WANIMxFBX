@@ -2867,6 +2867,11 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     currentPlants.forEach((pl, i) => {
       objs.push({ id: `plant:${i}`, kind: "plant", label: `${pl.side} foot plant`, t0: pl.t0, t1: pl.t1, color: PLANT_COLOR[pl.side], lane: 3 });
     });
+    // Compact lanes: only lanes that actually have objects take a row, so a
+    // plants-only clip doesn't reserve dead space for filter lanes.
+    const used = [...new Set(objs.map((o) => o.lane))].sort((a, b) => a - b);
+    const laneMap = new Map(used.map((l, i) => [l, i]));
+    for (const o of objs) o.lane = laneMap.get(o.lane)!;
     transport?.setStripObjects(objs, {
       onSelect: (id) => {
         selectedStripId = id;

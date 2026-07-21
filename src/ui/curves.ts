@@ -899,6 +899,11 @@ export class CurveView {
   private H(): number {
     return Math.max(HEIGHT_MIN, this.canvas.clientHeight || 0);
   }
+  /** X where header text can start without hiding under the side column. */
+  private readoutX(): number {
+    const open = this.side.classList.contains("open") && !this.side.classList.contains("min");
+    return open ? this.side.offsetWidth + 10 : 34;
+  }
   private width(): number {
     // The canvas's own content width, NOT el.clientWidth: the transport pads
     // this.el to align the canvas with the timeline strip, and clientWidth
@@ -1081,12 +1086,12 @@ export class CurveView {
     g.lineTo(this.x(this.playhead), this.H());
     g.stroke();
 
-    // Title + hover readout + selection count.
+    // Title + hover readout + selection count (clear of the side column).
     g.fillStyle = "rgba(255,255,255,0.6)";
     const hov = this.drag?.primary ?? this.hover;
     const readout = hov ? `  ·  ${hov.ch.label} @ ${hov.key.time.toFixed(2)}s = ${hov.key.value.toFixed(1)}` : "";
     const selCount = this.selected.size ? `  ·  ${this.selected.size} selected` : "";
-    g.fillText(this.model.title + readout + selCount, 34, PAD_TOP);
+    g.fillText(this.model.title + readout + selCount, this.readoutX(), PAD_TOP);
 
     this.drawBrushCursor(g);
   }
@@ -1187,7 +1192,7 @@ export class CurveView {
 
     if (!model) {
       g.fillStyle = "rgba(255,255,255,0.5)";
-      g.fillText("Select bones in the tree to graph their motion.", 40, PAD_TOP + 2);
+      g.fillText("Select bones in the tree to graph their motion.", this.readoutX() + 6, PAD_TOP + 2);
       this.drawDensePlayhead(g);
       return;
     }
@@ -1211,7 +1216,7 @@ export class CurveView {
     const first = model.channels.find((c) => this.axisVis[c.axis]);
     const readout = first ? `  ·  ${first.label} = ${first.values[f]?.toFixed(1) ?? "?"}` : "";
     const n = model.channels.filter((c) => this.axisVis[c.axis]).length;
-    g.fillText(`Channels: ${n} track${n === 1 ? "" : "s"}${this.denseCompare ? " · comparing" : ""}${readout}`, 34, PAD_TOP);
+    g.fillText(`Channels: ${n} track${n === 1 ? "" : "s"}${this.denseCompare ? " · comparing" : ""}${readout}`, this.readoutX(), PAD_TOP);
   }
 
   private playheadFrame(times: number[]): number {
