@@ -141,8 +141,16 @@ you pick where the file is going, and only that target's options show:
 Shared across targets: output name, trim range readout, frame rate + speed
 with the live frame-count readout. Settings are remembered per target.
 
-Import mirrors this: File → Open… accepts .wanim / .fbx / .scene.json / VRM/
-GLB with type detection (as today) — one entry point, no format submenus.
+Import mirrors this — one entry point (File → Open…, plus drag-drop), type
+detected, each source doing the obvious thing:
+
+- **.wanim** — a recording: full editing session (motion + face tracks).
+- **.fbx** — an animation take: imported through the name resolver into the
+  same session type (retarget-friendly; our own exports round-trip 1:1).
+- **VRM / GLB** — a body: swaps the body of a live session, or starts an
+  asset-only session (pose/author from scratch, Shogun export) when nothing
+  is loaded.
+- **.scene.json** — a saved scene: reopens the recording with all edits.
 
 Retires: the Export tab, the separate "Export Shogun target rig" menu item
 and tab section (now the Shogun preset), and the Rig-tab key-reduction
