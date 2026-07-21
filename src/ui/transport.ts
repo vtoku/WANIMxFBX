@@ -49,6 +49,19 @@ export interface TransportRange {
   lane?: number;
 }
 
+/** A selectable object on the strip lanes: a filter op, range smooth, the
+ *  loop, a warp key (point), a foot plant. Click selects; the host shows its
+ *  properties and handles delete. */
+export interface StripObject {
+  id: string;
+  kind: "filter" | "range" | "loop" | "warp" | "plant";
+  label: string;
+  t0: number;
+  t1: number;
+  color: string;
+  lane: number;
+}
+
 export interface Transport {
   element: HTMLElement;
   getTrim(): { start: number; end: number };
@@ -76,6 +89,10 @@ export interface Transport {
   setMarks(marks: TransportMark[]): void;
   /** Colored range underlines (scoped filters, foot plants). */
   setRanges(ranges: TransportRange[]): void;
+  /** Selectable lane objects under the track (filters, loop, warp, plants). */
+  setStripObjects(objects: StripObject[], cbs?: { onSelect(id: string | null): void }): void;
+  /** Highlight (or clear) the selected strip object. */
+  selectStripObject(id: string | null): void;
   /** Mini dope sheet under the strip: per-effector key rows (empty = hidden). */
   setDope(rows: DopeRow[], cbs?: TransportKeyCallbacks): void;
   /** Curve editor under the strip (null = unavailable). */
@@ -138,6 +155,7 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
           <div class="t-handle t-in" aria-label="Trim start"></div>
           <div class="t-handle t-out" aria-label="Trim end"></div>
         </div>
+        <div class="t-objlanes" hidden></div>
         <div class="t-playhead"></div>
       </div>
       <div class="t-side">
@@ -182,6 +200,7 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
   const ruler = el.querySelector(".t-ruler") as HTMLElement;
   const timeline = el.querySelector(".t-timeline") as HTMLElement;
   const trackCanvas = el.querySelector(".t-track") as HTMLCanvasElement;
+  const objLanesEl = el.querySelector(".t-objlanes") as HTMLElement;
   const region = el.querySelector(".t-region") as HTMLElement;
   const inH = el.querySelector(".t-in") as HTMLElement;
   const outH = el.querySelector(".t-out") as HTMLElement;
@@ -514,6 +533,64 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
   function drawMarks() {
     drawRuler();
     drawTrack();
+    renderStripObjects();
+  }
+
+  // ---- strip objects (selectable lane pills) -------------------------------
+  let stripObjects: StripObject[] = [];
+  let stripCbs: { onSelect(id: string | null): void } | undefined;
+  let selectedStrip: string | null = null;
+  const LANE_H = 14;
+
+  function renderStripObjects() {
+    objLanesEl.innerHTML = "";
+    if (!stripObjects.length) {
+      objLanesEl.hidden = true;
+      return;
+    }
+    objLanesEl.hidden = false;
+    const lanes = Math.max(...stripObjects.map((o) => o.lane)) + 1;
+    objLanesEl.style.height = `${lanes * LANE_H}px`;
+    const w = objLanesEl.getBoundingClientRect().width || 1;
+    for (const o of stripObjects) {
+      const pill = document.createElement("button");
+      pill.type = "button";
+      pill.className = `t-obj t-obj-${o.kind}` + (o.id === selectedStrip ? " sel" : "");
+      pill.title = o.label;
+      pill.dataset.oid = o.id;
+      const x0 = (pct(o.t0) / 100) * w;
+      const x1 = (pct(o.t1) / 100) * w;
+      const isPoint = o.t1 - o.t0 < 1e-6;
+      const left = Math.max(-4, isPoint ? x0 - 4 : x0);
+      const width = isPoint ? 8 : Math.max(6, Math.min(w + 8, x1) - left);
+      if (x1 < -4 || x0 > w + 4) continue; // off-view
+      pill.style.left = `${left}px`;
+      pill.style.width = `${width}px`;
+      pill.style.top = `${o.lane * LANE_H + 2}px`;
+      pill.style.background = o.color;
+      pill.addEventListener("click", (e) => {
+        e.stopPropagation();
+        selectedStrip = selectedStrip === o.id ? null : o.id;
+        renderStripObjects();
+        stripCbs?.onSelect(selectedStrip);
+      });
+      objLanesEl.appendChild(pill);
+    }
+  }
+
+  function setStripObjects(objects: StripObject[], cbs?: { onSelect(id: string | null): void }) {
+    stripObjects = objects;
+    if (cbs) stripCbs = cbs;
+    if (selectedStrip && !objects.some((o) => o.id === selectedStrip)) {
+      selectedStrip = null;
+      stripCbs?.onSelect(null);
+    }
+    renderStripObjects();
+  }
+
+  function selectStripObject(id: string | null) {
+    selectedStrip = id;
+    renderStripObjects();
   }
   function setMarks(next: TransportMark[]) {
     marks = next;
@@ -739,6 +816,8 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
     setKeys,
     setMarks,
     setRanges,
+    setStripObjects,
+    selectStripObject,
     setDope,
     setCurves,
     setChannels,

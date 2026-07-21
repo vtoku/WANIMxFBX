@@ -72,6 +72,8 @@ export class PreviewScene {
   private boneRoot: THREE.Group | null = null;
   private body: THREE.Group | null = null;
   private links: Array<[number, number]> = [];
+  /** Bone indices whose joint dot is collapsed onto the parent (eyes/jaw). */
+  private hideJointBone = new Set<number>();
   private lines: THREE.LineSegments | null = null;
   private joints: THREE.Points | null = null;
 
@@ -385,6 +387,11 @@ export class PreviewScene {
     this.scene.add(root);
 
     // Links = every parent-child pair (skip the root, which has no parent).
+    this.hideJointBone.clear();
+    for (const n of ["LeftEye", "RightEye", "Jaw"]) {
+      const i = clip.names.indexOf(n);
+      if (i >= 0) this.hideJointBone.add(i);
+    }
     this.links = [];
     clip.parents.forEach((p, i) => {
       if (p >= 0) this.links.push([p, i]);
@@ -510,7 +517,11 @@ export class PreviewScene {
 
     const jointPos = this.joints.geometry.getAttribute("position") as THREE.BufferAttribute;
     for (let i = 0; i < this.boneNodes.length; i++) {
-      this.boneNodes[i].getWorldPosition(wp);
+      // Eye/jaw joints sit just proud of the face mesh and read as white
+      // squares on the eyes — collapse them onto their parent (hidden inside
+      // the head; a duplicate point in skeleton-only views).
+      const src = this.hideJointBone.has(i) ? (this.clip ? this.boneNodes[this.clip.parents[i]] ?? this.boneNodes[i] : this.boneNodes[i]) : this.boneNodes[i];
+      src.getWorldPosition(wp);
       jointPos.setXYZ(i, wp.x, wp.y, wp.z);
     }
     jointPos.needsUpdate = true;

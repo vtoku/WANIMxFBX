@@ -41,7 +41,7 @@ import { sanitizeFilename, downloadBytes } from "./fbx/export.ts";
 import { exportShogunFbx, isVrmBody } from "./shogun/exportShogun.ts";
 import { PreviewScene } from "./preview/scene.ts";
 import { loadFaceMeshData } from "./preview/face.ts";
-import { createTransport, type Transport, type TransportKeyMarker } from "./ui/transport.ts";
+import { createTransport, type Transport, type TransportKeyMarker, type StripObject } from "./ui/transport.ts";
 import type { Marker } from "./ui/timemap.ts";
 import { saveLastSession, loadLastSession, clearLastSession, touchLastSession, lastSessionAgeMs } from "./session.ts";
 import { ICONS } from "./ui/icons.ts";
@@ -102,7 +102,10 @@ document.addEventListener("keydown", (e) => {
     // Standard DCC manipulation keys: Q space, W move, E rotate; standard
     // transport keys: Space play/pause, ←/→ frame step (shift = ×10).
     const k = e.key.toLowerCase();
-    if (e.key === "Delete") rigHotkeys?.del();
+    if (e.key === "Delete") {
+      if (stripHotkeys?.del()) return; // selected strip object first
+      rigHotkeys?.del();
+    }
     else if (k === "w") rigHotkeys?.mode("translate");
     else if (k === "e") rigHotkeys?.mode("rotate");
     else if (k === "q") rigHotkeys?.toggleSpace();
@@ -662,6 +665,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       <button id="sceneSave" class="button ghost" title="Bundles the recording plus every edit and setting into one .scene.json. Drop it on the app later to pick up exactly where you left off.">Save scene…</button>
       <button id="reset" class="button ghost">Load another file</button>
     </div>
+    <div id="objPanel" class="obj-panel" hidden></div>
     <h4 class="group">Feet</h4>
     <label class="field">
       <span>Pin planted feet</span>
@@ -2778,27 +2782,8 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   }
 
   function renderWarpChips() {
-    warpChipsEl.innerHTML = "";
-    for (const k of [...warpKeys].sort((a, b) => a.time - b.time)) {
-      const chip = document.createElement("span");
-      chip.className = "rig-key";
-      const label = document.createElement("button");
-      label.textContent = `${fmtTime(k.time)} ×${k.speed}`;
-      label.title = "Source-time speed key";
-      const del = document.createElement("button");
-      del.textContent = "×";
-      del.title = "Remove this speed key";
-      del.addEventListener("click", () => {
-        pushHistory();
-        const oldWarp = warpKeys.map((kk) => ({ ...kk }));
-        warpKeys.splice(warpKeys.indexOf(k), 1);
-        remapForWarpChange(oldWarp, warpKeys);
-        renderWarpChips();
-        void reclean();
-      });
-      chip.append(label, del);
-      warpChipsEl.appendChild(chip);
-    }
+    warpChipsEl.innerHTML = ""; // retired — warp keys are strip objects
+    refreshTimelineRanges();
   }
   (document.getElementById("warpAdd") as HTMLButtonElement).addEventListener("click", () => {
     if (!preview || !loaded) return;
@@ -2819,48 +2804,14 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
 
   const rangeChipsEl = document.getElementById("rangeChips") as HTMLDivElement;
   function renderRangeChips() {
-    rangeChipsEl.innerHTML = "";
-    for (const r of rangeSmooths) {
-      const chip = document.createElement("span");
-      chip.className = "rig-key";
-      const label = document.createElement("button");
-      label.textContent = `${fmtTime(r.t0)}–${fmtTime(r.t1)} @ ${r.cutoffHz} Hz`;
-      const del = document.createElement("button");
-      del.textContent = "×";
-      del.title = "Remove this smoothing pass";
-      del.addEventListener("click", () => {
-        pushHistory();
-        rangeSmooths.splice(rangeSmooths.indexOf(r), 1);
-        renderRangeChips();
-        void reclean();
-      });
-      chip.append(label, del);
-      rangeChipsEl.appendChild(chip);
-    }
+    rangeChipsEl.innerHTML = ""; // retired — range smooths are strip objects
+    refreshTimelineRanges();
   }
   const loopChipsEl = document.getElementById("loopChips") as HTMLDivElement;
   /** The make-loop op as a removable chip next to the range-smooth chips. */
   function renderLoopChip() {
-    loopChipsEl.innerHTML = "";
-    if (!loopOp) return;
-    const op = loopOp;
-    const chip = document.createElement("span");
-    chip.className = "rig-key";
-    const label = document.createElement("button");
-    label.textContent = `Loop ${fmtTime(op.t0)}–${fmtTime(op.t1)} · ${op.blendS}s blend${op.inPlace ? " · in-place" : ""}`;
-    label.title = "Make-loop cycle blend. Click to zoom the timeline to the loop.";
-    label.addEventListener("click", () => transport?.getTimeMap().fit(op.t0, op.t1));
-    const del = document.createElement("button");
-    del.textContent = "×";
-    del.title = "Remove the loop blend";
-    del.addEventListener("click", () => {
-      pushHistory();
-      loopOp = null;
-      renderLoopChip();
-      void reclean();
-    });
-    chip.append(label, del);
-    loopChipsEl.appendChild(chip);
+    loopChipsEl.innerHTML = ""; // retired — the loop is a strip object
+    refreshTimelineRanges();
   }
 
   (document.getElementById("rangeAdd") as HTMLButtonElement).addEventListener("click", () => {
@@ -2923,14 +2874,211 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
 
   const PLANT_COLOR = { Left: "#3fc1ff", Right: "#ffa24a" } as const;
 
-  /** Colored underlines: scoped filters (top lanes) + foot plants (bottom). */
+  /** Everything time-scoped, as SELECTABLE strip objects on the lanes:
+   *  filters, range smooths, the loop, warp keys, foot plants. Click one →
+   *  its properties open on the Clip page; Delete removes it. */
+  let selectedStripId: string | null = null;
   function refreshTimelineRanges() {
-    const rs = cleanOps
-      .filter((o) => o.enabled)
-      .map((o, i) => ({ t0: o.range.t0, t1: o.range.t1, color: FILTER_COLOR[o.filter], lane: i % 3 }));
-    // Foot plants on a dedicated lane so they never collide with filters.
-    for (const p of currentPlants) rs.push({ t0: p.t0, t1: p.t1, color: PLANT_COLOR[p.side], lane: 4 });
-    transport?.setRanges(rs);
+    const objs: StripObject[] = [];
+    cleanOps.filter((o) => o.id !== "__preview").forEach((o, i) => {
+      objs.push({
+        id: `op:${o.id}`,
+        kind: "filter",
+        label: `${opLabel(o)} · ${o.bones.length} bone${o.bones.length === 1 ? "" : "s"}${o.enabled ? "" : " (bypassed)"}`,
+        t0: o.range.t0,
+        t1: o.range.t1,
+        color: FILTER_COLOR[o.filter],
+        lane: i % 2,
+      });
+    });
+    rangeSmooths.forEach((r, i) => {
+      objs.push({ id: `rs:${i}`, kind: "range", label: `Range smooth ${r.cutoffHz} Hz`, t0: r.t0, t1: r.t1, color: "#8fd3ff", lane: 2 });
+    });
+    if (loopOp) {
+      objs.push({ id: "loop", kind: "loop", label: `Loop · ${loopOp.blendS}s blend${loopOp.inPlace ? " · in-place" : ""}`, t0: loopOp.t0, t1: loopOp.t1, color: "#f5b301", lane: 2 });
+    }
+    warpKeys.forEach((k, i) => {
+      objs.push({ id: `warp:${i}`, kind: "warp", label: `Speed ×${k.speed}`, t0: k.time, t1: k.time, color: "#ff8ad4", lane: 3 });
+    });
+    currentPlants.forEach((pl, i) => {
+      objs.push({ id: `plant:${i}`, kind: "plant", label: `${pl.side} foot plant`, t0: pl.t0, t1: pl.t1, color: PLANT_COLOR[pl.side], lane: 3 });
+    });
+    transport?.setStripObjects(objs, {
+      onSelect: (id) => {
+        selectedStripId = id;
+        if (id) setTab("clip");
+        renderObjPanel();
+      },
+    });
+  }
+
+  stripHotkeys = { del: () => (selectedStripId ? deleteStripObject(selectedStripId) : false) };
+  const objPanelEl = () => document.getElementById("objPanel") as HTMLDivElement | null;
+  let objPreviewTimer = 0;
+  const objReclean = () => {
+    window.clearTimeout(objPreviewTimer);
+    objPreviewTimer = window.setTimeout(() => { refreshTimelineRanges(); void reclean(); }, 200);
+  };
+
+  function deleteStripObject(id: string): boolean {
+    if (id.startsWith("op:")) {
+      const op = cleanOps.find((o) => `op:${o.id}` === id);
+      if (!op) return false;
+      pushHistory();
+      cleanOps.splice(cleanOps.indexOf(op), 1);
+    } else if (id.startsWith("rs:")) {
+      const i = Number(id.slice(3));
+      if (!(i >= 0 && i < rangeSmooths.length)) return false;
+      pushHistory();
+      rangeSmooths.splice(i, 1);
+    } else if (id === "loop") {
+      if (!loopOp) return false;
+      pushHistory();
+      loopOp = null;
+    } else if (id.startsWith("warp:")) {
+      const i = Number(id.slice(5));
+      if (!(i >= 0 && i < warpKeys.length)) return false;
+      pushHistory();
+      const oldWarp = warpKeys.map((k) => ({ ...k }));
+      warpKeys.splice(i, 1);
+      remapForWarpChange(oldWarp, warpKeys);
+    } else if (id.startsWith("plant:")) {
+      const i = Number(id.slice(6));
+      const pl = currentPlants[i];
+      if (!pl) return false;
+      pushHistory();
+      feetPlantRemoved.push({ side: pl.side, t0: pl.t0 - 0.02, t1: pl.t1 + 0.02 });
+    } else return false;
+    selectedStripId = null;
+    transport?.selectStripObject(null);
+    renderObjPanel();
+    refreshTimelineRanges();
+    void reclean();
+    return true;
+  }
+
+  /** The selected strip object's properties, on the Clip page. */
+  function renderObjPanel() {
+    const panel = objPanelEl();
+    if (!panel) return;
+    const id = selectedStripId;
+    panel.innerHTML = "";
+    panel.hidden = !id;
+    if (!id) return;
+    const head = document.createElement("div");
+    head.className = "obj-head";
+    const title = document.createElement("span");
+    const zoom = document.createElement("button");
+    zoom.className = "button ghost";
+    zoom.textContent = "Zoom";
+    const del = document.createElement("button");
+    del.className = "button ghost";
+    del.textContent = "Delete";
+    del.addEventListener("click", () => deleteStripObject(id));
+    const x = document.createElement("button");
+    x.className = "restore-x";
+    x.textContent = "×";
+    x.title = "Deselect";
+    x.addEventListener("click", () => {
+      selectedStripId = null;
+      transport?.selectStripObject(null);
+      renderObjPanel();
+    });
+    head.append(title, zoom, del, x);
+    panel.appendChild(head);
+    const body = document.createElement("div");
+    body.className = "obj-body";
+    panel.appendChild(body);
+    const fitTo = (t0: number, t1: number) => zoom.addEventListener("click", () => transport?.getTimeMap().fit(t0, t1));
+    const slider = (label: string, min: number, max: number, step: number, value: number, fmtV: (v: number) => string, apply: (v: number) => void) => {
+      const row = document.createElement("label");
+      row.className = "field";
+      const span = document.createElement("span");
+      span.textContent = label;
+      const wrap = document.createElement("span");
+      wrap.style.cssText = "display:flex;align-items:center;gap:0.5rem";
+      const input = document.createElement("input");
+      input.type = "range";
+      input.min = String(min); input.max = String(max); input.step = String(step);
+      input.value = String(value);
+      const out = document.createElement("output");
+      out.style.cssText = "min-width:3.6rem;text-align:right";
+      out.value = fmtV(value);
+      let pushed = false;
+      input.addEventListener("input", () => {
+        if (!pushed) { pushed = true; pushHistory(); }
+        const v = Number(input.value);
+        out.value = fmtV(v);
+        apply(v);
+        objReclean();
+      });
+      wrap.append(input, out);
+      row.append(span, wrap);
+      body.appendChild(row);
+    };
+
+    if (id.startsWith("op:")) {
+      const op = cleanOps.find((o) => `op:${o.id}` === id);
+      if (!op) { panel.hidden = true; return; }
+      title.textContent = `${opLabel(op)} · ${op.bones.length} bone${op.bones.length === 1 ? "" : "s"} · ${fmtTime(op.range.t0)}–${fmtTime(op.range.t1)}`;
+      fitTo(op.range.t0, op.range.t1);
+      const d = FILTER_DEFAULT[op.filter];
+      const cur = op.params.cutoffHz ?? op.params.widthFrames ?? op.params.thresholdDeg ?? op.params.toleranceDeg ?? d.value;
+      slider("Strength", d.min, d.max, d.step, cur, (v) => fmtStrength(op.filter, v), (v) => { op.params = opParams(op.filter, v); });
+      const en = document.createElement("label");
+      en.className = "field";
+      en.innerHTML = `<span>Enabled</span>`;
+      const chk = document.createElement("input");
+      chk.type = "checkbox";
+      chk.checked = op.enabled;
+      chk.addEventListener("change", () => { pushHistory(); op.enabled = chk.checked; refreshTimelineRanges(); void reclean(); });
+      en.appendChild(chk);
+      body.appendChild(en);
+    } else if (id.startsWith("rs:")) {
+      const i = Number(id.slice(3));
+      const r = rangeSmooths[i];
+      if (!r) { panel.hidden = true; return; }
+      title.textContent = `Range smooth · ${fmtTime(r.t0)}–${fmtTime(r.t1)}`;
+      fitTo(r.t0, r.t1);
+      slider("Cutoff", 0.5, 15, 0.5, r.cutoffHz, (v) => `${v} Hz`, (v) => { r.cutoffHz = v; });
+    } else if (id === "loop") {
+      if (!loopOp) { panel.hidden = true; return; }
+      const op = loopOp;
+      title.textContent = `Loop · ${fmtTime(op.t0)}–${fmtTime(op.t1)}`;
+      fitTo(op.t0, op.t1);
+      slider("Blend", 0.1, 2, 0.1, op.blendS, (v) => `${v.toFixed(1)}s`, (v) => { op.blendS = v; });
+      const ip = document.createElement("label");
+      ip.className = "field";
+      ip.innerHTML = `<span>In-place (remove travel drift)</span>`;
+      const chk = document.createElement("input");
+      chk.type = "checkbox";
+      chk.checked = op.inPlace;
+      chk.addEventListener("change", () => { pushHistory(); op.inPlace = chk.checked; void reclean(); });
+      ip.appendChild(chk);
+      body.appendChild(ip);
+    } else if (id.startsWith("warp:")) {
+      const i = Number(id.slice(5));
+      const k = warpKeys[i];
+      if (!k) { panel.hidden = true; return; }
+      title.textContent = `Speed key @ ${fmtTime(k.time)} (source time)`;
+      fitTo(Math.max(0, k.time - 1), k.time + 1);
+      slider("Speed", 0.25, 4, 0.25, k.speed, (v) => `×${v}`, (v) => {
+        const oldWarp = warpKeys.map((kk) => ({ ...kk }));
+        k.speed = v;
+        remapForWarpChange(oldWarp, warpKeys);
+      });
+    } else if (id.startsWith("plant:")) {
+      const i = Number(id.slice(6));
+      const pl = currentPlants[i];
+      if (!pl) { panel.hidden = true; return; }
+      title.textContent = `${pl.side} foot plant · ${fmtTime(pl.t0)}–${fmtTime(pl.t1)}`;
+      fitTo(pl.t0, pl.t1);
+      del.textContent = "Stop pinning";
+      const note = document.createElement("p");
+      note.className = "note";
+      note.textContent = "Detected planted span — the foot is pinned here. Stop pinning to release it (re-detection remembers the removal).";
+      body.appendChild(note);
+    }
   }
 
   const plantHintEl = document.getElementById("plantHint") as HTMLParagraphElement;
@@ -2938,77 +3086,17 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   /** Chips for the detected foot plants; × removes one (per-plant control).
    *  Long recordings detect dozens — cap the list behind a "+N more" toggle
    *  so the panel isn't dominated by plant chips. */
-  let plantsExpanded = false;
-  const PLANT_CHIP_CAP = 6;
   function renderPlants() {
-    plantListEl.innerHTML = "";
-    const show = fixFeetChk.checked && currentPlants.length > 0;
-    plantHintEl.hidden = !show;
-    if (!show) return;
-    const sorted = [...currentPlants].sort((a, b) => a.t0 - b.t0);
-    const visible = plantsExpanded ? sorted : sorted.slice(0, PLANT_CHIP_CAP);
-    for (const p of visible) {
-      const chip = document.createElement("span");
-      chip.className = "rig-key";
-      const label = document.createElement("button");
-      label.textContent = `${p.side[0]} ${fmtTime(p.t0)}–${fmtTime(p.t1)}`;
-      label.style.color = PLANT_COLOR[p.side];
-      label.title = "Zoom the timeline to this plant";
-      label.addEventListener("click", () => transport?.getTimeMap().fit(p.t0, p.t1));
-      const del = document.createElement("button");
-      del.textContent = "×";
-      del.title = "Stop pinning this plant";
-      del.addEventListener("click", () => {
-        pushHistory();
-        // Record the removal so re-detection keeps it (overlap match).
-        feetPlantRemoved.push({ side: p.side, t0: p.t0 - 0.02, t1: p.t1 + 0.02 });
-        void reclean();
-      });
-      chip.append(label, del);
-      plantListEl.appendChild(chip);
-    }
-    if (sorted.length > PLANT_CHIP_CAP) {
-      const more = document.createElement("button");
-      more.className = "button ghost";
-      more.textContent = plantsExpanded ? "Show fewer" : `+${sorted.length - PLANT_CHIP_CAP} more`;
-      more.addEventListener("click", () => {
-        plantsExpanded = !plantsExpanded;
-        renderPlants();
-      });
-      plantListEl.appendChild(more);
-    }
+    plantListEl.innerHTML = ""; // retired — plants are strip objects
+    plantHintEl.hidden = true;
+    refreshTimelineRanges();
   }
 
   // Reassign the forward-declared stub with the real renderer.
   renderFilters = () => {
-    filterListEl.innerHTML = "";
-    for (const op of cleanOps) {
-      if (op.id === "__preview") continue; // live dialog preview, not a chip
-      const row = document.createElement("span");
-      row.className = "rig-key";
-      const en = document.createElement("input");
-      en.type = "checkbox";
-      en.checked = op.enabled;
-      en.title = "Enable/disable this filter";
-      en.addEventListener("change", () => { pushHistory(); op.enabled = en.checked; void reclean(); renderFilters(); });
-      const label = document.createElement("button");
-      label.textContent = `${opLabel(op)} · ${op.bones.length} bone${op.bones.length === 1 ? "" : "s"} · ${fmtTime(op.range.t0)}–${fmtTime(op.range.t1)}`;
-      label.title = "Click to zoom the timeline to this filter's range";
-      label.style.color = FILTER_COLOR[op.filter];
-      label.addEventListener("click", () => { transport?.getTimeMap().fit(op.range.t0, op.range.t1); });
-      const del = document.createElement("button");
-      del.textContent = "×";
-      del.title = "Delete this filter";
-      del.addEventListener("click", () => {
-        pushHistory();
-        cleanOps.splice(cleanOps.indexOf(op), 1);
-        renderFilters();
-        void reclean();
-      });
-      row.append(en, label, del);
-      filterListEl.appendChild(row);
-    }
+    filterListEl.innerHTML = ""; // retired — filters are strip objects
     refreshTimelineRanges();
+    renderObjPanel(); // params may have changed under the panel
   };
 
   // ---- key reduction analysis (Stage 4) -----------------------------------
@@ -4189,6 +4277,8 @@ function showEmptyEditor() {
 let userOpenedFile = false;
 /** Name of the auto-reopened recording (buildPanel shows a note once). */
 let restoredSessionName: string | null = null;
+/** Delete-key hook for the selected timeline strip object (set per session). */
+let stripHotkeys: { del(): boolean } | null = null;
 
 async function handleFile(file: File) {
   document.querySelector(".restore-bar")?.remove(); // opening supersedes the offer
