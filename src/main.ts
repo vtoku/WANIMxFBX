@@ -2219,6 +2219,9 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         row.className = "rail-layer" + (i === activeLayerIdx ? " active" : "");
         row.addEventListener("click", () => {
           if (activeLayerIdx !== i) { activeLayerIdx = i; renderRigLayers(); updateRigEditor(); }
+          // Router: a layer's properties live on the Rig page (until the
+          // dedicated layer inspector page lands in U3).
+          if (activeTab !== "rig") setTab("rig");
         });
         const name = document.createElement("button");
         name.className = "rail-name";

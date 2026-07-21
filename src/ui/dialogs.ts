@@ -190,8 +190,7 @@ export function openAbout(version: string): void {
     <p>Version ${version}</p>
     <p class="note">Edit and clean up Warudo motion capture in your browser, then
       export to FBX, VRMA, or wanim. Everything runs locally; nothing is uploaded.</p>
-    <p class="note">Unofficial tool, not affiliated with Warudo / HakuyaLabs.
-      Face overlay by Face Cap / Bannaflak.</p>
+    <p class="note">Face overlay by Face Cap / Bannaflak.</p>
     <p><a href="https://github.com/vtoku/WRYAnimator" target="_blank" rel="noopener">github.com/vtoku/WRYAnimator</a></p>
   `;
   openModal("About", body);
