@@ -2249,8 +2249,15 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         weight.min = "0"; weight.max = "100"; weight.step = "1";
         weight.value = String(Math.round(layer.weight * 100));
         weight.title = "Layer weight";
+        const wOut = document.createElement("output");
+        wOut.className = "rail-out";
+        wOut.value = `${Math.round(layer.weight * 100)}%`;
         weight.addEventListener("click", (e) => e.stopPropagation());
-        weight.addEventListener("input", () => { layer.weight = Number(weight.value) / 100; rebakeRig(); });
+        weight.addEventListener("input", () => {
+          layer.weight = Number(weight.value) / 100;
+          wOut.value = `${Math.round(layer.weight * 100)}%`;
+          rebakeRig();
+        });
         weight.addEventListener("change", () => { saveRigCache(); renderRigLayers(); });
         const mute = document.createElement("button");
         mute.className = "rail-btn" + (layer.enabled ? "" : " muted");
@@ -2263,12 +2270,20 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
           rebakeRig();
           renderRigLayers();
         });
-        row.append(name, weight, mute);
+        row.append(name, weight, wOut, mute);
         rail.appendChild(row);
         if (i === activeLayerIdx) {
           // The active layer expands with its full properties.
           const detail = document.createElement("div");
           detail.className = "rail-detail";
+          const field = (labelText: string, control: HTMLElement) => {
+            const f = document.createElement("label");
+            f.className = "rail-field";
+            const l = document.createElement("span");
+            l.textContent = labelText;
+            f.append(l, control);
+            return f;
+          };
           const mode = document.createElement("select");
           mode.title = "Additive nudges the motion by a delta; override replaces it with the keyed pose (scaled by weight).";
           for (const m of ["additive", "override"] as const) {
@@ -2299,24 +2314,36 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
             rebakeRig();
             renderRigLayers();
           });
-          detail.append(mode, extent);
+          const rowA = document.createElement("div");
+          rowA.className = "rail-frow";
+          rowA.append(field("Mode", mode), field("Extent", extent));
+          detail.appendChild(rowA);
           if (layer.extent === "fade") {
+            const rowB = document.createElement("div");
+            rowB.className = "rail-frow";
+            const wrap = document.createElement("span");
+            wrap.className = "rail-fade";
             const fade = document.createElement("input");
             fade.type = "range";
             fade.min = "0.1"; fade.max = "2"; fade.step = "0.1";
             fade.value = String(layer.fadeS);
-            fade.title = `Fade ${layer.fadeS.toFixed(1)}s — how long a correction eases in/out around its keys`;
+            fade.title = "How long a correction eases in/out around its keys";
+            const fOut = document.createElement("output");
+            fOut.className = "rail-out";
+            fOut.value = `${layer.fadeS.toFixed(1)}s`;
             fade.addEventListener("input", () => {
               layer.fadeS = Number(fade.value);
-              fade.title = `Fade ${layer.fadeS.toFixed(1)}s`;
+              fOut.value = `${layer.fadeS.toFixed(1)}s`;
               rebakeRig();
             });
             fade.addEventListener("change", () => saveRigCache());
-            detail.appendChild(fade);
+            wrap.append(fade, fOut);
+            rowB.append(field("Fade", wrap));
+            detail.appendChild(rowB);
           }
           const del = document.createElement("button");
-          del.className = "rail-btn";
-          del.textContent = "×";
+          del.className = "button ghost rail-del";
+          del.textContent = "Delete";
           del.title = "Delete this layer and its keys";
           del.addEventListener("click", () => {
             pushHistory();
@@ -2326,7 +2353,10 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
             rebakeRig();
             updateRigEditor();
           });
-          detail.appendChild(del);
+          const rowC = document.createElement("div");
+          rowC.className = "rail-frow rail-actions";
+          rowC.appendChild(del);
+          detail.appendChild(rowC);
           rail.appendChild(detail);
         }
       }

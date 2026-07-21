@@ -1851,7 +1851,7 @@ kbd {
 }
 
 .rail-layer.active .rail-name { color: var(--accent); }
-.rail-layer input[type="range"] { width: 54px; }
+.rail-layer input[type="range"] { width: 48px; }
 
 .rail-btn {
   background: none;
@@ -1939,18 +1939,106 @@ kbd {
 /* Active layer's expanded properties in the rail. */
 .rail-detail {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 6px 4px 18px;
+  flex-direction: column;
+  gap: 5px;
+  padding: 2px 8px 8px 18px;
+  border-left: 2px solid rgba(245, 179, 1, 0.35);
+  margin-left: 8px;
 }
 
-.rail-detail select {
-  font-size: 0.68rem;
-  padding: 1px 2px;
-  background: rgba(40, 46, 56, 0.9);
+.rail-frow {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.rail-actions { justify-content: flex-end; }
+
+.rail-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.rail-field > span:first-child {
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.rail-detail select,
+.t-rail select {
+  appearance: none;
+  -webkit-appearance: none;
+  font-size: 0.72rem;
+  height: 22px;
+  padding: 0 18px 0 8px;
+  background: rgba(40, 46, 56, 0.9)
+    url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="8" height="5" viewBox="0 0 8 5"><path d="M1 1l3 3 3-3" stroke="%239aa1ad" stroke-width="1.4" fill="none" stroke-linecap="round"/></svg>')
+    no-repeat right 6px center;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 5px;
   color: var(--text);
+  cursor: pointer;
 }
 
-.rail-detail input[type="range"] { width: 44px; }
+.rail-detail select:hover,
+.t-rail select:hover { border-color: rgba(255, 255, 255, 0.3); }
+
+.rail-fade { display: flex; align-items: center; gap: 6px; }
+.rail-fade input[type="range"] { flex: 1; }
+
+.rail-out {
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  min-width: 2.2rem;
+  text-align: right;
+}
+
+.rail-del { height: 20px; padding: 0 0.55rem; font-size: 0.68rem; }
+
+/* Slim custom sliders for the rail (native tracks read as cheap). */
+.t-rail input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 16px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.t-rail input[type="range"]::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.t-rail input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  margin-top: -3.5px;
+  transition: transform 0.1s;
+}
+
+.t-rail input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.2); }
+
+.t-rail input[type="range"]::-moz-range-track {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.t-rail input[type="range"]::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+}
