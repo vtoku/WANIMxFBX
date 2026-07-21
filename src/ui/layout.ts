@@ -9,12 +9,27 @@ import { getPref, setPref } from "./prefs.ts";
 const DOCK_MIN = 220, DOCK_MAX = 640;
 const TL_MIN = 0, TL_MAX = 520;
 
+/** Curve/dope panel heights follow the timeline dock: a taller dock means
+ *  taller curves, not just empty padding. th=0 (auto) keeps the defaults. */
+function applyPanelHeights(th: number): void {
+  const root = document.documentElement.style;
+  if (th > 340) {
+    const curve = Math.max(230, Math.min(460, th - 190));
+    root.setProperty("--curve-height", `${curve}px`);
+    root.setProperty("--dope-height", `${Math.max(260, th - 260)}px`);
+  } else {
+    root.removeProperty("--curve-height");
+    root.removeProperty("--dope-height");
+  }
+}
+
 /** Push the saved layout sizes + collapse flag onto the document. */
 export function applyLayoutVars(dock: HTMLElement): void {
   const root = document.documentElement.style;
   root.setProperty("--dock-width", `${getPref("dockWidth")}px`);
   const th = getPref("timelineHeight");
   root.setProperty("--timeline-height", th > 0 ? `${th}px` : "0px");
+  applyPanelHeights(th);
   dock.classList.toggle("collapsed", getPref("dockCollapsed"));
 }
 
@@ -57,6 +72,7 @@ export function initLayout(dock: HTMLElement, editMain: HTMLElement, timelineDoc
     const move = (ev: PointerEvent) => {
       const h = Math.max(TL_MIN, Math.min(TL_MAX, bottom - ev.clientY));
       document.documentElement.style.setProperty("--timeline-height", `${h}px`);
+      applyPanelHeights(h);
     };
     const up = (ev: PointerEvent) => {
       window.removeEventListener("pointermove", move);

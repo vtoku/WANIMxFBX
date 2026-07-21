@@ -111,7 +111,7 @@ export interface CurveCallbacks {
   onRetime?(moves: Array<{ from: number; to: number }>): void;
 }
 
-const HEIGHT = 150;
+const HEIGHT_MIN = 150; // canvas height comes from CSS (--curve-height)
 const PAD_TOP = 10;
 const PAD_BOTTOM = 16;
 /** Smooth-brush radius in canvas pixels. */
@@ -265,7 +265,6 @@ export class CurveView {
 
     this.canvas = document.createElement("canvas");
     this.canvas.style.width = "100%";
-    this.canvas.style.height = `${HEIGHT}px`;
     this.canvas.style.display = "block";
     this.el.appendChild(this.canvas);
     this.ctx = this.canvas.getContext("2d")!;
@@ -303,7 +302,7 @@ export class CurveView {
         const r = this.canvas.getBoundingClientRect();
         const x0 = e.clientX - r.left;
         const move = (ev: PointerEvent) => {
-          this.band = { x0, y0: 0, x1: ev.clientX - r.left, y1: HEIGHT };
+          this.band = { x0, y0: 0, x1: ev.clientX - r.left, y1: this.H() };
           this.draw();
         };
         const up = (ev: PointerEvent) => {
@@ -577,7 +576,7 @@ export class CurveView {
   /** Inverse of y(): canvas y -> value in the group's own scale. */
   private valueAtY(py: number, group: "pos" | "rot"): number {
     const s = this.scales[group];
-    const h = HEIGHT - PAD_TOP - PAD_BOTTOM;
+    const h = this.H() - PAD_TOP - PAD_BOTTOM;
     return s.min + (1 - (py - PAD_TOP) / Math.max(1, h)) * (s.max - s.min);
   }
 
@@ -879,6 +878,10 @@ export class CurveView {
   }
 
   // ---- geometry ------------------------------------------------------------
+  /** Canvas height, driven by CSS (--curve-height) so the panel can grow. */
+  private H(): number {
+    return Math.max(HEIGHT_MIN, this.canvas.clientHeight || 0);
+  }
   private width(): number {
     // The canvas's own content width, NOT el.clientWidth: the transport pads
     // this.el to align the canvas with the timeline strip, and clientWidth
@@ -892,12 +895,12 @@ export class CurveView {
   }
   private y(v: number, group: "pos" | "rot"): number {
     const s = this.scales[group];
-    const h = HEIGHT - PAD_TOP - PAD_BOTTOM;
+    const h = this.H() - PAD_TOP - PAD_BOTTOM;
     return PAD_TOP + (1 - (v - s.min) / Math.max(1e-9, s.max - s.min)) * h;
   }
   private valuePerPx(group: "pos" | "rot"): number {
     const s = this.scales[group];
-    return (s.max - s.min) / Math.max(1, HEIGHT - PAD_TOP - PAD_BOTTOM);
+    return (s.max - s.min) / Math.max(1, this.H() - PAD_TOP - PAD_BOTTOM);
   }
   private timeAt(e: PointerEvent): number {
     const r = this.canvas.getBoundingClientRect();
@@ -977,11 +980,11 @@ export class CurveView {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     if (this.canvas.width !== Math.round(w * dpr)) {
       this.canvas.width = Math.round(w * dpr);
-      this.canvas.height = Math.round(HEIGHT * dpr);
+      this.canvas.height = Math.round(this.H() * dpr);
     }
     const g = this.ctx;
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    g.clearRect(0, 0, w, HEIGHT);
+    g.clearRect(0, 0, w, this.H());
     if (this.mode === "channels") {
       this.drawDense(g, w);
       this.drawBandRect(g);
@@ -1058,7 +1061,7 @@ export class CurveView {
     g.strokeStyle = "#ff5a5a";
     g.beginPath();
     g.moveTo(this.x(this.playhead), 0);
-    g.lineTo(this.x(this.playhead), HEIGHT);
+    g.lineTo(this.x(this.playhead), this.H());
     g.stroke();
 
     // Title + hover readout + selection count.
@@ -1095,7 +1098,7 @@ export class CurveView {
       const sx0 = this.x(this.brushStroke.t0);
       const sx1 = this.x(this.brushStroke.t1);
       g.fillStyle = "rgba(107,177,255,0.14)";
-      g.fillRect(sx0, 0, sx1 - sx0, HEIGHT);
+      g.fillRect(sx0, 0, sx1 - sx0, this.H());
     }
     if (!this.brushPt) return;
     g.strokeStyle = "rgba(255,255,255,0.8)";
@@ -1139,12 +1142,12 @@ export class CurveView {
       const sx0 = this.x(this.chanSpan.t0);
       const sx1 = this.x(this.chanSpan.t1);
       g.fillStyle = "rgba(120,170,255,0.10)";
-      g.fillRect(sx0, 0, sx1 - sx0, HEIGHT);
+      g.fillRect(sx0, 0, sx1 - sx0, this.H());
       g.strokeStyle = "rgba(120,170,255,0.45)";
       g.lineWidth = 1;
       g.beginPath();
-      g.moveTo(sx0 + 0.5, 0); g.lineTo(sx0 + 0.5, HEIGHT);
-      g.moveTo(sx1 + 0.5, 0); g.lineTo(sx1 + 0.5, HEIGHT);
+      g.moveTo(sx0 + 0.5, 0); g.lineTo(sx0 + 0.5, this.H());
+      g.moveTo(sx1 + 0.5, 0); g.lineTo(sx1 + 0.5, this.H());
       g.stroke();
     }
     // Zero lines per group in play.
@@ -1212,7 +1215,7 @@ export class CurveView {
     g.lineWidth = 1;
     g.beginPath();
     g.moveTo(this.x(this.playhead), 0);
-    g.lineTo(this.x(this.playhead), HEIGHT);
+    g.lineTo(this.x(this.playhead), this.H());
     g.stroke();
   }
 

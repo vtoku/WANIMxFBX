@@ -673,6 +673,10 @@ main:has(.loaded-state:not([hidden])) {
   flex: 1;
   min-width: 220px;
   height: 22px;
+  /* Zoomed-off-view keys/handles position past 0-100% — clip horizontally
+     only (the trim handles + playhead overhang vertically on purpose). */
+  overflow-x: clip;
+  overflow-y: visible;
   background: rgba(255, 255, 255, 0.12);
   border-radius: 4px;
   cursor: pointer;
@@ -758,7 +762,7 @@ main:has(.loaded-state:not([hidden])) {
 
 /* Mini dope sheet under the strip */
 .t-dope {
-  max-height: 132px;
+  max-height: var(--dope-height, 260px);
   overflow-y: auto;
   margin-top: 0.35rem;
   border-top: 1px solid var(--border);
@@ -784,6 +788,8 @@ main:has(.loaded-state:not([hidden])) {
 .d-strip {
   position: relative;
   height: 100%;
+  overflow-x: clip; /* zoomed-off-view dots must not escape the row */
+  overflow-y: visible;
   border-radius: 3px;
   background: rgba(255, 255, 255, 0.04);
 }
@@ -870,6 +876,13 @@ main:has(.loaded-state:not([hidden])) {
 /* ---- f-curve editor: Channels mode ---- */
 .t-curves {
   position: relative;
+}
+
+.t-curves canvas {
+  display: block;
+  width: 100%;
+  /* Grows with the timeline dock (layout.ts sets the var on resize). */
+  height: var(--curve-height, 230px);
 }
 
 .cv-side {
