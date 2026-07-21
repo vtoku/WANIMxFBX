@@ -47,7 +47,7 @@ console.log(`hips(cm)   [${hips0.join(", ")}] at frame 0`);
 
 const mbNames = remapNames(resampled.names, "motionbuilder");
 const fbx = writeAnimationFbx(resampled, { takeName: "Take 001", names: mbNames, tposeRest: true });
-console.log(`fbx        ${(fbx.length / 1e6).toFixed(2)} MB binary (MoBu names, T-pose rest)`);
+console.log(`fbx        ${(fbx.length / 1e6).toFixed(2)} MB binary (HumanIK names, T-pose rest)`);
 
 // Sanity: binary FBX header + footer magic.
 const head = new TextDecoder().decode(fbx.subarray(0, 20));

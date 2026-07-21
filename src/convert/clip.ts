@@ -54,7 +54,7 @@ function extractFace(
 
 // Unity (left-handed, +Z forward) → right-handed Y-up by negating X (NOT Z).
 // Both are valid handedness flips, but the X-mirror keeps the character facing
-// +Z with its left side at +x — the convention MotionBuilder's HIK
+// +Z with its left side at +x — the convention HumanIK
 // characterization requires (a −Z-facing T-pose makes its auto-mapping mirror
 // the legs/feet). Positions mirror x; quaternions negate the y,z components.
 const flipPos = (p: Vec3): Vec3 => [-p[0], p[1], p[2]];

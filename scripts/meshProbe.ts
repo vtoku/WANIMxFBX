@@ -1,4 +1,4 @@
-// Minimal mesh-in-FBX probes for bisecting MotionBuilder's mesh acceptance.
+// Minimal mesh-in-FBX probes for bisecting the target DCC's mesh acceptance.
 // Usage: node --experimental-strip-types scripts/meshProbe.ts <variant: plain|underBone|blend>
 import { writeFileSync } from "node:fs";
 import {

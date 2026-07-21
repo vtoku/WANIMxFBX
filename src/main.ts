@@ -637,7 +637,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     <button id="ghostBtn" class="eb-btn eb-ico" title="Overlay the original (uncleaned) recording as a translucent ghost, so you can see what the cleanup changed while you edit.">${ICONS.ghost}<span class="eb-lbl">Ghost</span></button>
     <span class="eb-spacer"></span>
     <input id="outName" class="eb-name" type="text" spellcheck="false" title="Base name for exported files (e.g. myclip-clean → myclip-clean.fbx)" />
-    <select id="format" aria-label="Export format" title="FBX for MotionBuilder/Maya/Blender; VRMA for Warudo/VSeeFace/Unity; WANIM back into Warudo.">
+    <select id="format" aria-label="Export format" title="FBX for DCC pipelines; VRMA for Warudo/VSeeFace/Unity; WANIM back into Warudo.">
       <option value="fbx" selected>FBX</option>
       <option value="vrma">VRMA</option>
       <option value="wanim">WANIM</option>
@@ -738,7 +738,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
 
     <div class="tab" id="tab-rig">
     <div id="pickerMount"></div>
-    <h4 class="group">Layers <span class="hint-i" title="FK/IK adjustment layers, MotionBuilder style. Add a layer, pause, then drag a handle on the figure; a key lands at the playhead. Spheres (hips, hands, feet) move with IK and rotate; the small diamonds on the body bones rotate FK-style. On the timeline: right-click a key for copy/paste/delete, shift-drag to select several, ctrl-click to add one, drag a key to retime it. Edits auto-save for this recording.">ⓘ</span></h4>
+    <h4 class="group">Layers <span class="hint-i" title="FK/IK adjustment layers, DCC-style: additive nudges the motion, override replaces it. Add a layer, pause, then drag a handle on the figure; a key lands at the playhead. Spheres (hips, hands, feet) move with IK and rotate; the small diamonds on the body bones rotate FK-style. On the timeline: right-click a key for copy/paste/delete, shift-drag to select several, ctrl-click to add one, drag a key to retime it. Edits auto-save for this recording.">ⓘ</span></h4>
     <div id="rigLayers" class="rig-layers"></div>
     <div class="rig-row">
       <button id="rigAdd" class="button ghost">Add layer</button>
@@ -760,7 +760,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
           <option value="bodypart">Body part</option>
           <option value="full" selected>Full body</option>
         </select>
-        <label class="field" style="margin:0;gap:4px" title="When on, every handle drag also keys the whole body at that frame (MoBu auto-key). Off by default so cleanup keys stay local.">
+        <label class="field" style="margin:0;gap:4px" title="When on, every handle drag also keys the whole body at that frame (auto-key). Off by default so cleanup keys stay local.">
           <span>Auto-key</span>
           <input id="autoKey" type="checkbox" />
         </label>
@@ -866,7 +866,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       <span>Bone names</span>
       <select id="names">
         <option value="unity" selected>Unity (HumanBodyBones)</option>
-        <option value="motionbuilder">MotionBuilder / HumanIK</option>
+        <option value="motionbuilder">HumanIK (Hips/Spine…)</option>
       </select>
     </label>
     <label class="field">
@@ -918,7 +918,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       <button id="reduceAnalyze" class="button ghost" title="Estimate key counts before/after reduction per body part.">Analyze keys</button>
     </div>
     <div id="reduceStats" class="clean-stats"></div>
-    <h4 class="group">Formats <span class="hint-i" title="Format and Download live in the toolbar. Drag the in/out handles on the timeline to trim. FBX comes out as binary 7.5, which MotionBuilder can read, with the face and body meshes baked in if you turned them on. VRMA carries the humanoid motion and expressions for Warudo, VSeeFace, and Unity; it plays on any VRM and doesn't need a mesh. WANIM writes the cleaned recording back out so you can take it into Warudo again.">ⓘ</span></h4>
+    <h4 class="group">Formats <span class="hint-i" title="Format and Download live in the toolbar. Drag the in/out handles on the timeline to trim. FBX comes out as binary 7.5, which animation DCCs can read, with the face and body meshes baked in if you turned them on. VRMA carries the humanoid motion and expressions for Warudo, VSeeFace, and Unity; it plays on any VRM and doesn't need a mesh. WANIM writes the cleaned recording back out so you can take it into Warudo again.">ⓘ</span></h4>
 
     <h4 class="group">Shogun target rig <span class="hint-i" title="A static, world-aligned skeleton plus skinned mesh built straight from your loaded VRM body, for use as a Vicon Shogun retarget target. No animation is baked in. Bone names and hierarchy are kept exactly so name-keyed streaming back into Unity or Warudo still lines up.">ⓘ</span></h4>
     <label class="field">
@@ -2196,7 +2196,63 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     }
   }
 
+  /** Compact layers stack in the transport rail (DCC convention: newest on top,
+   *  click = active, M = mute, slider = weight). Mirrors the Rig tab list. */
+  function renderLayerRail() {
+    const rail = transport?.layerRail;
+    if (!rail) return;
+    rail.innerHTML = "";
+    if (rigLayers.length) {
+      const head = document.createElement("div");
+      head.className = "t-rail-head";
+      const title = document.createElement("span");
+      title.textContent = "Layers";
+      const add = document.createElement("button");
+      add.className = "rail-btn";
+      add.textContent = "+";
+      add.title = "Add a layer";
+      add.addEventListener("click", () => rigAddBtn.click());
+      head.append(title, add);
+      rail.appendChild(head);
+      for (let i = rigLayers.length - 1; i >= 0; i--) {
+        const layer = rigLayers[i];
+        const row = document.createElement("div");
+        row.className = "rail-layer" + (i === activeLayerIdx ? " active" : "");
+        row.addEventListener("click", () => {
+          if (activeLayerIdx !== i) { activeLayerIdx = i; renderRigLayers(); updateRigEditor(); }
+        });
+        const name = document.createElement("button");
+        name.className = "rail-name";
+        name.textContent = layer.name;
+        name.title = `${layer.name} — ${layer.mode}, ${Math.round(layer.weight * 100)}%`;
+        const weight = document.createElement("input");
+        weight.type = "range";
+        weight.min = "0"; weight.max = "100"; weight.step = "1";
+        weight.value = String(Math.round(layer.weight * 100));
+        weight.title = "Layer weight";
+        weight.addEventListener("click", (e) => e.stopPropagation());
+        weight.addEventListener("input", () => { layer.weight = Number(weight.value) / 100; rebakeRig(); });
+        weight.addEventListener("change", () => { saveRigCache(); renderRigLayers(); });
+        const mute = document.createElement("button");
+        mute.className = "rail-btn" + (layer.enabled ? "" : " muted");
+        mute.textContent = "M";
+        mute.title = layer.enabled ? "Mute this layer" : "Unmute this layer";
+        mute.addEventListener("click", (e) => {
+          e.stopPropagation();
+          pushHistory();
+          layer.enabled = !layer.enabled;
+          rebakeRig();
+          renderRigLayers();
+        });
+        row.append(name, weight, mute);
+        rail.appendChild(row);
+      }
+    }
+    transport?.syncRail();
+  }
+
   function renderRigLayers() {
+    renderLayerRail();
     rigLayersEl.innerHTML = "";
     rigLayers.forEach((layer, i) => {
       const row = document.createElement("div");
@@ -2235,7 +2291,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       });
 
       const extent = document.createElement("select");
-      extent.title = "Fade: keys ease in/out around the keyed range, so one key is a local correction. Hold: the first/last key extends across the whole clip, MoBu style.";
+      extent.title = "Fade: keys ease in/out around the keyed range, so one key is a local correction. Hold: the first/last key extends across the whole clip, DCC hold style.";
       for (const x of ["fade", "hold"] as const) {
         const o = document.createElement("option");
         o.value = x;
@@ -3391,6 +3447,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     transport?.onMarkersChange((m) => { sceneMarkers = m; saveRigCache(); });
     transport?.onTrimChange(() => updateRetimeInfo()); // live export readout
     wireChannels();
+    renderLayerRail(); // a rebuilt transport starts with an empty rail
     // Test hook: drive scripts set trim ranges through the transport.
     (window as unknown as { __transport?: Transport | null }).__transport = transport;
   }

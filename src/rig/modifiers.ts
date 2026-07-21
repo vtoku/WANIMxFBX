@@ -4,7 +4,7 @@ import { quatMul, quatNormalize, quatRotate } from "../convert/quat.ts";
 import { solveTwoBone, qconj, vadd, vsub, vscale, vnorm, vlen } from "../convert/ik.ts";
 import { worldFromLocal, type FramePose } from "../convert/fk.ts";
 
-// MotionBuilder-style modifiers: whole-clip parametric corrections, applied
+// DCC-style modifiers: whole-clip parametric corrections, applied
 // with sliders instead of keys. They run after cleaning/proportions and
 // BEFORE the control-rig layers, so layer keys sit on top of the corrected
 // motion.
@@ -28,7 +28,7 @@ export interface Modifiers {
   mirror: boolean;
   /**
    * Per-limb reach: pull the hand/foot back toward its path BEFORE cleaning
-   * (0 = cleaned motion, 1 = original endpoint path), like MoBu's Reach T.
+   * (0 = cleaned motion, 1 = original endpoint path), like a DCC reach control.
    */
   reach: { leftHand: number; rightHand: number; leftFoot: number; rightFoot: number };
 }

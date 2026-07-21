@@ -1,5 +1,5 @@
 // Full-FBX check: build a body+face skinned FBX through the real src modules,
-// round-trip via FBXLoader, optionally write to disk for the MoBu check.
+// round-trip via FBXLoader, optionally write to disk for the DCC check.
 // Usage: node scripts/faceFbxCheck.mjs <file.wanim> [out.fbx]
 import { readFileSync, writeFileSync } from "node:fs";
 globalThis.self = globalThis;

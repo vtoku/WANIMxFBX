@@ -1,7 +1,7 @@
-# Blender 4.4 headless verifier for the Shogun target-rig FBX.
+# Headless external-importer verifier for the Shogun target-rig FBX.
 # Imports scripts/shogun-out.fbx, reads the armature's bone head world
 # positions, and diffs them against scripts/shogun-joints.json (the world
-# positions the exporter baked, in cm). Blender's FBX importer may apply its own
+# positions the exporter baked, in cm). Its FBX importer may apply its own
 # unit scaling, so we solve one best-fit uniform scale across all joints and
 # report the worst residual relative to the skeleton size. A tiny residual means
 # the joints landed where the VRM rest pose put them.
@@ -17,7 +17,7 @@ bpy.ops.wm.read_factory_settings(use_empty=True)
 try:
     bpy.ops.import_scene.fbx(filepath=fbx)
 except RuntimeError as e:
-    # Blender (like MotionBuilder 2018+) refuses ASCII FBX. The Shogun target
+    # Blender (like modern animation DCCs) refuses ASCII FBX. The Shogun target
     # rig MUST be ASCII 7.4 (that is the format Vicon Shogun validated against),
     # so an independent Blender import of this exact file is impossible. The
     # joint world positions are instead verified by scripts/shogunCheck.mjs,

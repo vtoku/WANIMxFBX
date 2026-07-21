@@ -2,7 +2,7 @@
 
 Goal: every imported animation (wanim today, FBX when the import spec
 lands) gets a complete, modern control rig automatically, the way
-MotionBuilder builds a Control Rig at characterization and Unreal
+Leading animation DCCs build a Control Rig at characterization and game engines
 builds an IK Rig. The v0.26 layer architecture (capture-time solve,
 pure curve evaluation, per-bone local channel keys) is NOT changed by
 this spec; it is a coverage + UI expansion of the same model.
@@ -35,7 +35,7 @@ blend, pole-vector handles, a picker, keying modes.
 ## 2. Per-limb IK/FK state
 
 Today IK is capture-time only and implicit (dragging a hand solves the
-chain). Make the limb state explicit and persistent, MoBu-style:
+chain). Make the limb state explicit and persistent, DCC-style:
 
 - Per limb (L/R arm, L/R leg): an IK/FK blend value 0..1, shown as a
   small slider in the Rig tab and stored per layer snapshot. At 1
@@ -55,7 +55,7 @@ chain). Make the limb state explicit and persistent, MoBu-style:
 
 ## 3. Picker panel
 
-A schematic body map (flat SVG silhouette, MoBu Character Controls /
+A schematic body map (flat SVG silhouette, DCC Character Controls /
 UE Control Rig picker style) on the Rig tab:
 
 - Click = select effector (same selection as clicking a viewport
@@ -70,7 +70,7 @@ UE Control Rig picker style) on the Rig tab:
 
 ## 4. Keying modes
 
-A three-way mode next to "Key pose" (MoBu's trio):
+A three-way mode next to "Key pose" (the standard DCC trio):
 
 - **Selected**: key only the selected effector's bones (today's "Key
   pose" behavior scoped down).

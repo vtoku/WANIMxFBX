@@ -53,7 +53,7 @@ console.log(
     `VRM ${res.version ?? "none"}`,
 );
 
-// Dump the FBX + a joint reference next to the repo for the Blender step.
+// Dump the FBX + a joint reference next to the repo for the external-importer step.
 const outFbx = join(repo, "scripts", "shogun-out.fbx");
 writeFileSync(outFbx, fbx);
 
@@ -216,7 +216,7 @@ check("bind pose covers every joint", limbs.every((b) => poseMat.has(b.id)), `${
   check("(d) bone names byte-identical to VRM node names", bad.length === 0, bad.length ? `not in nodes: ${bad.slice(0, 4).join(", ")}` : `${limbs.length} names`);
 }
 
-// A joint reference for the Blender diff (world positions in cm, from BindPose).
+// A joint reference for the external-importer diff (world positions in cm, from BindPose).
 const jointRef = limbs.map((b) => ({ name: b.name, world: worldOf(b.id) }));
 writeFileSync(join(repo, "scripts", "shogun-joints.json"), JSON.stringify(jointRef));
 

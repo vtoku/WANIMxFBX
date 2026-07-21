@@ -1,4 +1,4 @@
-// Schematic body-map picker (MoBu Character Controls / UE Control Rig style):
+// Schematic body-map picker (the schematic body-map style used by DCC control rigs):
 // a flat SVG silhouette whose regions select the same effectors the viewport
 // handles do. It shows per-effector state at a glance (keyed dot, pinned ring,
 // IK/FK tint), scopes the channel tree on a limb click, and opens a finger

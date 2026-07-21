@@ -1,10 +1,10 @@
 # Spec: FBX import + Unity humanoid .anim export
 
-Target workflow (round trip through MotionBuilder):
+Target workflow (round trip through an external DCC):
 
 ```
 .wanim + your VRM  →  FBX export            (exists today, v0.14)
-        ↓ animation cleanup in MotionBuilder
+        ↓ animation cleanup in the external DCC
 cleaned FBX  →  drop back into WRYAnimator  (NEW: FBX import)
         ↓
 humanoid .anim with blendshapes             (NEW: Unity/Warudo export)
@@ -18,7 +18,7 @@ app's `ConvertedClip` so everything downstream (preview, trim, cleaning,
 re-export) just works.
 
 - **Skeleton mapping**: bone names → HumanBodyBones indices via the existing
-  resolver families (our own exports use Unity or MoBu names, so a re-imported
+  resolver families (our own exports use Unity or HumanIK names, so a re-imported
   file maps 1:1; Mixamo files also work). Reuse `resolveBone` logic from
   `convert/body.ts` (factor it out of the body module).
 - **Tracks**: sample each bone's quaternion + Hips translation from the
@@ -31,7 +31,7 @@ re-export) just works.
 - **Take selection**: if the file has multiple takes (ours have the anim +
   TPose), pick the longest non-TPose take; expose a select if ambiguous.
 - **Meshes**: ignore imported meshes for v1 (preview keeps its own body
-  pipeline); revisit if users want to see the MoBu-edited mesh.
+  pipeline); revisit if users want to see the DCC-edited mesh.
 - Verification: export → import → tracks must round-trip within ε
   (extend `faceFbxCheck` with a reimport assertion).
 
@@ -83,7 +83,7 @@ plan instead:
 
 - **FBX**: export the VRM's spring chains as STATIC extra bones (rest pose
   only, no curves) with the hair/skirt verts' REAL weights. Tiny cost
-  (bones + weights), and MotionBuilder users can drive them with MoBu's own
+  (bones + weights), and DCC users can drive them with its own
   spring/relation constraints or hand keys — physics belongs to the DCC.
 - **.anim / Warudo**: nothing needed at all — Warudo/Unity re-simulate the
   avatar's own spring bones live at playback, so the clip should NOT carry

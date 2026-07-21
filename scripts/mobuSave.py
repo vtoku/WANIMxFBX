@@ -1,4 +1,4 @@
-# Open our FBX in MotionBuilder and save it back out — produces a known-good
+# Open our FBX in the target DCC and save it back out — produces a known-good
 # reference file from the same engine, for byte-level comparison.
 import os
 import sys

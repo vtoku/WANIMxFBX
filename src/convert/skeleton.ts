@@ -75,8 +75,8 @@ if (BONE_PARENTS.length !== BONE_COUNT) {
 }
 
 /**
- * Unity HumanBodyBones name → MotionBuilder / HumanIK template name. These are
- * the names MotionBuilder's Characterization auto-detects (also the Mixamo
+ * Unity HumanBodyBones name → HumanIK template name. These are
+ * the names DCC characterization auto-detects (also the Mixamo
  * convention sans prefix), so an FBX exported with them characterizes without
  * manual slot mapping. Unity names are kept as the default for Unity/Warudo
  * re-import, where renaming would break name-keyed retargeting.

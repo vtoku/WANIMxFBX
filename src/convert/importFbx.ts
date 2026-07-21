@@ -1,7 +1,7 @@
 // FBX animation import: parse a .fbx with three's FBXLoader and convert its
 // takes into the app's ConvertedClip so everything downstream (preview, trim,
 // cleaning, rig, all exports) works unchanged. This is the inverse of the FBX
-// writer for a file WE exported, and also handles Mixamo / MoBu-cleaned files.
+// writer for a file WE exported, and also handles Mixamo / DCC-cleaned files.
 //
 // Convention notes (load-bearing):
 //  - FBXLoader returns LOCAL-space bone tracks — the same space as
@@ -91,7 +91,7 @@ function collectMorphMeshes(root: THREE.Object3D): THREE.Mesh[] {
 
 /**
  * Map our 55 HumanBodyBones indices to source bones. Uses the VRM-agnostic
- * name resolver families (our Unity/MoBu exports map 1:1; Mixamo/Rigify too).
+ * name resolver families (our Unity/HumanIK exports map 1:1; Mixamo/Rigify too).
  */
 function mapOurBones(bones: Map<string, THREE.Bone>): (THREE.Bone | null)[] {
   const unityToIndex = new Map<string, number>();

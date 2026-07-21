@@ -84,6 +84,11 @@ export interface Transport {
   setChannels(config: ChannelsConfig | null): void;
   /** The embedded curve view (channels mode drives it directly). */
   curveView: CurveView;
+  /** Right rail beside the dope/curves panels — the host renders the
+   *  animation-layers list here (shown only while a panel is open). */
+  layerRail: HTMLElement;
+  /** Re-evaluate rail visibility after the host (re)fills layerRail. */
+  syncRail(): void;
   dispose(): void;
 }
 
@@ -156,8 +161,11 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
         </div>
       </div>
     </div>
-    <div class="t-dope" hidden>
-      <div class="t-dope-rows"></div>
+    <div class="t-panels">
+      <div class="t-dope" hidden>
+        <div class="t-dope-rows"></div>
+      </div>
+      <aside class="t-rail" hidden aria-label="Animation layers"></aside>
     </div>
   `;
 
@@ -165,7 +173,9 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
   // the playback-state callback can reference it from the first emit).
   const curveView = new CurveView();
   curveView.setTimeMap(tm);
-  el.appendChild(curveView.el);
+  const panelsEl = el.querySelector(".t-panels") as HTMLElement;
+  const railEl = el.querySelector(".t-rail") as HTMLElement;
+  panelsEl.insertBefore(curveView.el, railEl);
 
   const playBtn = el.querySelector(".t-play") as HTMLButtonElement;
   const strip = el.querySelector(".t-strip") as HTMLElement;
@@ -637,6 +647,9 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
   const syncDopeVisibility = () => {
     dopeEl.hidden = view !== "keys" || dopeCount === 0;
     curveView.el.hidden = view !== "curves" || !curveAvailable;
+    // The layers rail fills the dead zone under the right-side controls
+    // whenever a panel is open (the host renders its content).
+    railEl.hidden = (dopeEl.hidden && curveView.el.hidden) || railEl.childElementCount === 0;
     segEl.hidden = dopeCount === 0 && !curveAvailable;
     for (const b of segBtns) {
       const v = b.dataset.view as typeof view;
@@ -722,6 +735,8 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
     setCurves,
     setChannels,
     curveView,
+    layerRail: railEl,
+    syncRail: syncDopeVisibility,
     dispose: () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);

@@ -1,4 +1,4 @@
-// Verifies the control-rig layer engine (bone-local channel curves, MoBu
+// Verifies the control-rig layer engine (bone-local channel curves, DCC
 // style) plus the modifiers, on real motion data:
 //  - the rig is an input device: IK solves at capture, keys are LOCAL values
 //  - override keys PIN the local pose (pop fixes hold on any base motion)

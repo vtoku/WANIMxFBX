@@ -11,7 +11,7 @@ ASCII writer, and a UI entry.
 ## What to port (from VRM2VICON/src)
 
 - `convert/build.ts` (the bone rebake): world-align every joint to the
-  Maya convention Shogun expects: identity rotation in bind pose, local
+  the convention Shogun expects: identity rotation in bind pose, local
   translation = world offset from parent, recomputed skin clusters
   (TransformLink = bone world bind, Transform = inverse). ORIGINAL bone
   names and hierarchy preserved verbatim (renaming breaks name-keyed
@@ -20,7 +20,7 @@ ASCII writer, and a UI entry.
 - `fbx/asciiFbx.ts` + `fbx/export.ts`: port VERBATIM as
   `src/shogun/asciiFbx.ts`. Shogun compatibility was validated against
   this exact ASCII 7.5 output; do NOT reroute through our binary writer
-  (MoBu import does not matter for a Shogun target rig). Keep
+  (animation-DCC import does not matter for a Shogun target rig). Keep
   meters->cm, UpAxis=Y, UnitScaleFactor=1.
 - `vrm/loadGltf.ts` + `vrm/springs.ts`: GLTFLoader parse with
   associations, spring-chain detection, strip-springs option.
@@ -55,7 +55,7 @@ ASCII writer, and a UI entry.
   ASCII FBX, asserts every joint has identity rotation, translations
   equal world-offset deltas, cluster TransformLink equals the bind
   world matrix, bone names byte-identical to the VRM node names.
-- Load the output in Blender 4.4 headless (installed) and diff joint
+- Load the output in a headless DCC importer (installed) and diff joint
   world positions against the VRM rest pose (script, not eyeball).
 - Playwright: Export tab shows the row when a VRM body is loaded and
   the download produces a non-trivial file.

@@ -1,8 +1,8 @@
-// Binary FBX 7.5 (7500) serializer. MotionBuilder 2018+ dropped ASCII FBX
+// Binary FBX 7.5 (7500) serializer. the target animation DCCs (2018+) dropped ASCII FBX
 // import, so binary is required; 7500 also clears the "legacy file" warning.
 // Format: 64-bit node records (uint64 EndOffset/NumProps/PropertyListLen),
 // 25-byte null terminators, and the fixed assimp-style footer (whose footer
-// code is a constant, not a hash — assimp's output imports into MotionBuilder).
+// code is a constant, not a hash — assimp's output imports cleanly there).
 
 export type FbxProp =
   | { t: "Y"; v: number } // int16
@@ -152,12 +152,12 @@ function writeNode(w: ByteWriter, n: FbxNode) {
   w.patchU64(endOffsetPos, w.len);
 }
 
-// FBX SDK header/footer constants, matching Blender's io_scene_fbx "timedate
+// FBX SDK header/footer constants, matching the reference open-source exporter's "timedate
 // hack" exactly: the SDK validates the 16-byte footer code as an encryption of
-// the CreationTime string; mismatch => MotionBuilder "legacy file" mode, which
-// loads the skeleton but silently drops the animation graph. Blender pins
+// the CreationTime string; mismatch => the DCC's "legacy file" mode, which
+// loads the skeleton but silently drops the animation graph. That exporter pins
 // CreationTime to 1970-01-01 10:00:00:000 and writes the matching constant
-// footer code + FileId. We compute the code (verified == Blender's constant
+// footer code + FileId. We compute the code (verified == the reference exporter's constant
 // for that timestamp) so the relationship stays explicit.
 export const FILE_ID = new Uint8Array([
   0x28, 0xb3, 0x2a, 0xeb, 0xb6, 0x24, 0xcc, 0xc2, 0xbf, 0xc8, 0xb0, 0x2a, 0xa9, 0x2b, 0xfc, 0xf1,
@@ -210,7 +210,7 @@ export function serializeFbxBinary(top: FbxNode[], version = 7500): Uint8Array {
   for (const n of top) writeNode(w, n);
   w.zeros(NULL_RECORD_LEN); // top-level list terminator
 
-  // Footer, byte-for-byte in Blender's order: footer code, 4 zero bytes,
+  // Footer, byte-for-byte in the reference exporter's order: footer code, 4 zero bytes,
   // pad to 16-byte alignment (16 if already aligned), version, 120 zeros, magic.
   w.bytes(generateFooterCode(FBX_TIMESTAMP));
   w.zeros(4);

@@ -126,7 +126,7 @@ export function openPreferences(): void {
       note.textContent = "Applied to new sessions, never to a recording already open.";
       p.appendChild(note);
       selectRow(p, "Export frame rate", "exportFps", [["30", "30 fps"], ["60", "60 fps"], ["120", "120 fps"]], true);
-      selectRow(p, "Bone names", "nameScheme", [["unity", "Unity (HumanBodyBones)"], ["motionbuilder", "MotionBuilder / HumanIK"]]);
+      selectRow(p, "Bone names", "nameScheme", [["unity", "Unity (HumanBodyBones)"], ["motionbuilder", "HumanIK (Hips/Spine…)"]]);
       selectRow(p, "Rest pose", "restPose", [["tpose", "T-pose"], ["first", "First frame"]]);
       selectRow(p, "Gizmo space", "gizmoSpace", [["local", "Local"], ["world", "World"]]);
       selectRow(p, "Playback rate", "playbackRate", [["0.25", "0.25x"], ["0.5", "0.5x"], ["1", "1x"], ["2", "2x"]], true);

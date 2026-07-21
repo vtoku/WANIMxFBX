@@ -1,4 +1,4 @@
-# Headless MotionBuilder import check.
+# Headless import check in the target animation DCC.
 # Run inside MotionBuilder:  motionbuilder.exe -batch scripts/mobuCheck.py
 # or standalone:             mobupy.exe scripts/mobuCheck.py <file.fbx>
 import os
@@ -88,7 +88,7 @@ from pyfbsdk import FBModel  # noqa: E402
 models = [c for c in scene.Components if isinstance(c, FBModel) and not isinstance(c, FBModelSkeleton)]
 emit("models:", ", ".join("%s<%s>" % (m.Name, type(m).__name__) for m in models[:12]))
 
-# Mesh sizes as MoBu sees them.
+# Mesh sizes as the DCC sees them.
 from pyfbsdk import FBVector3d  # noqa: E402
 
 for m in models:

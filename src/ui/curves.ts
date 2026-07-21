@@ -855,7 +855,9 @@ export class CurveView {
     const chan = this.mode === "channels";
     this.axisRow.hidden = !chan;
     this.tree.el.hidden = !chan;
-    this.side.classList.toggle("open", chan);
+    // The side is a real column in BOTH modes — the mode/tool rows were cut
+    // off when corrections mode fell back to the narrow label gutter.
+    this.side.classList.add("open");
     this.syncToolUi();
   }
 

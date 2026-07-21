@@ -183,7 +183,7 @@ export function extractBodyMeshes(
   scene.updateWorldMatrix(true, true);
   const ourWorld = bindWorldPositions(parents, bindPos);
 
-  // Unity name ??? our index, plus MoBu names (covers Mixamo-style rigs).
+  // Unity name ??? our index, plus HumanIK names (covers Mixamo-style rigs).
   const nameToIndex = new Map<string, number>();
   unityNames.forEach((u, i) => {
     nameToIndex.set(u, i);
@@ -215,7 +215,7 @@ export function extractBodyMeshes(
 
   // Capture the REST state in plain world space, using the asset's OWN
   // skinning for the rest shape (whatever its bind convention ??? 2017-era
-  // Quaternius and some Blender exports ship degenerate inverse binds, so we
+  // Quaternius and some DCC exports ship degenerate inverse binds, so we
   // never rely on them after this point).
   for (const m of skinnedMeshes) m.skeleton.update();
   const restWorldVerts = skinnedMeshes.map((m) => {

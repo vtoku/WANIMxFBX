@@ -1,7 +1,7 @@
 // Bone-name resolution families, factored out of convert/body.ts so both the
 // body-mesh retarget AND the FBX importer resolve source bone names to Unity
 // HumanBodyBones names the same way. A re-imported file that WE exported (Unity
-// or MotionBuilder names) maps 1:1; Mixamo / Rigify / Quaternius-modular rigs
+// or HumanIK names) maps 1:1; Mixamo / Rigify / Quaternius-modular rigs
 // map through the known naming families below.
 
 import { HUMAN_BODY_BONES } from "../wanim/parse.ts";
@@ -12,7 +12,7 @@ export function normalizeBoneName(raw: string): string {
   return raw.replace(/^mixamorig:?/, "").replace(/^DEF-/, "").replace(/[. ]/g, "");
 }
 
-// Blender/Rigify-style names (Quaternius) -> Unity HumanBodyBones names.
+// Rigify-style names (Quaternius) -> Unity HumanBodyBones names.
 const RIGIFY_MAP: Record<string, string> = {
   hips: "Hips",
   spine001: "Spine",
@@ -110,14 +110,14 @@ export function modularToUnity(name: string): string | null {
 }
 
 const UNITY_NAME_SET = new Set<string>(HUMAN_BODY_BONES);
-// MotionBuilder / HumanIK name -> Unity HumanBodyBones name (reverse of the
-// export map), so an FBX we exported with MoBu names re-imports 1:1.
+// HumanIK name -> Unity HumanBodyBones name (reverse of the
+// export map), so an FBX we exported with HumanIK names re-imports 1:1.
 const MOBU_REVERSE: Record<string, string> = {};
 for (const [unity, mobu] of Object.entries(MOTIONBUILDER_NAMES)) MOBU_REVERSE[mobu] = unity;
 
 /**
  * Resolve a raw source bone-node name to a Unity HumanBodyBones name, trying
- * every known naming family (our own Unity + MoBu exports, Mixamo, Rigify,
+ * every known naming family (our own Unity + HumanIK exports, Mixamo, Rigify,
  * Quaternius-modular). Returns null when nothing matches.
  */
 export function resolveUnityName(raw: string): string | null {

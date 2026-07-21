@@ -1,5 +1,5 @@
 // Ground-truth world rotations at fixed times, straight from the quaternions
-// (the same data the FBX captures), for comparison with MoBu's evaluation.
+// (the same data the FBX captures), for comparison with the DCC's evaluation.
 import { readFileSync } from "node:fs";
 const { parseWanim, HUMAN_BODY_BONES } = await import("../src/wanim/parse.ts");
 const { convertCharacter, resample } = await import("../src/convert/clip.ts");

@@ -4,7 +4,7 @@ import { quatMul, quatNormalize, quatSlerp, quatRotate, quatToEulerZYX, eulerZYX
 import { solveTwoBone, qconj, vadd, vsub, vscale, vlerp, vnorm, vlen } from "../convert/ik.ts";
 import { worldFromLocal, type FramePose } from "../convert/fk.ts";
 
-// MotionBuilder-style animation layers, done the way MoBu actually does it:
+// DCC-style animation layers, done the way the big animation packages do it:
 // layers hold PER-BONE LOCAL channel curves, and the control rig (IK
 // effectors, FK cells) is just an INPUT DEVICE. Dragging a hand solves IK
 // once, at capture time, and writes the resulting chain's local rotations as
@@ -22,7 +22,7 @@ import { worldFromLocal, type FramePose } from "../convert/fk.ts";
 //
 // Each rig effector maps 1:1 to the bone it edits (def.bone). An IK hand drag
 // writes keys on the three chain bones — i.e. on the upper-arm, forearm, and
-// hand effectors' tracks, which is exactly how MoBu control-rig keys land.
+// hand effectors' tracks, which is exactly how DCC control-rig keys land.
 
 // Known effector ids are listed for autocomplete; finger effectors are
 // generated per-hand (see FINGER_EFFECTORS) so the type stays open with the
@@ -193,7 +193,7 @@ export interface RigLayer {
   name: string;
   mode: "override" | "additive";
   /**
-   * "hold" = MoBu style, first/last key extends across the whole clip.
+   * "hold" = DCC style, first/last key extends across the whole clip.
    * "fade" = correction style: each key is a LOCAL bump easing over fadeS.
    */
   extent: "hold" | "fade";
@@ -1057,7 +1057,7 @@ export function keyEffectorTarget(
 
 /**
  * Blend an IK effector's solved chain locals back toward the pre-solve FK
- * locals by `blend` (1 = pure IK, 0 = pure FK). MoBu's per-limb IK/FK blend:
+ * locals by `blend` (1 = pure IK, 0 = pure FK). the per-limb IK/FK blend used by DCC control rigs:
  * root/mid always blend; the end bone blends too unless the drag set an
  * explicit rotation (then the hand keeps its chosen orientation). Returns the
  * bones still worth keying — at blend 0 the reverted chain drops out, so a

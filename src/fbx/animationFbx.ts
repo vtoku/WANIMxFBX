@@ -9,8 +9,8 @@ import {
 
 // Builds a binary FBX 7500 skeletal animation: a LimbNode skeleton driven by an
 // AnimationStack/Layer with per-bone Lcl Rotation curves and a Hips Lcl
-// Translation curve. Binary (not ASCII) because MotionBuilder 2018+ only
-// imports binary FBX. Y-up; lengths converted meters→cm.
+// Translation curve. Binary (not ASCII) because the target animation DCCs (2018+) only
+// import binary FBX. Y-up; lengths converted meters→cm.
 
 const FBX_TIME_SECOND = 46186158000;
 const METERS_TO_CM = 100;
@@ -179,7 +179,7 @@ export function writeAnimationFbx(clip: ResampledClip, opts: WriteAnimOpts = {})
     objects.push(node("NodeAttribute", [L(boneAttrId[i]), S(objName("", "NodeAttribute")), S("LimbNode")], [
       node("Properties70", [], [
         P("Color", S("ColorRGB"), S("Color"), S(""), D(0.8), D(0.8), D(0.8)),
-        // Display size of the joint in MoBu/Maya — too small makes the rig
+        // Display size of the joint in animation DCCs — too small makes the rig
         // hard to see and select ("really thin"); SDK default is 100.
         P("Size", S("double"), S("Number"), S(""), D(100)),
       ]),
@@ -269,7 +269,7 @@ export function writeAnimationFbx(clip: ResampledClip, opts: WriteAnimOpts = {})
   }
 
   // ---- "TPose" take: a one-key stance take so DCC tools can characterize
-  // from a guaranteed T-pose (also fixes feet/limb auto-mapping in MoBu).
+  // from a guaranteed T-pose (also fixes feet/limb auto-mapping in the target DCC).
   const tposeStackId = id();
   const tposeLayerId = id();
   const tposeTimes = [0];
@@ -325,7 +325,7 @@ export function writeAnimationFbx(clip: ResampledClip, opts: WriteAnimOpts = {})
     }
 
     // The FBX SDK needs a normals layer to accept the node as a real Mesh —
-    // without one, MotionBuilder imports the model as a Null (verified).
+    // without one, the target DCC imports the model as a Null (verified).
     const layerElems = [
       node("LayerElement", [], [
         node("Type", [S("LayerElementNormal")]),
@@ -379,7 +379,7 @@ export function writeAnimationFbx(clip: ResampledClip, opts: WriteAnimOpts = {})
     objects.push(node("Geometry", [L(geoId), S(objName(mesh.name, "Geometry")), S("Mesh")], geoChildren));
     // Skinned mesh at the scene root with identity transform; the clusters
     // carry the bind. DefaultAttributeIndex=0 is REQUIRED: the SDK template
-    // default (-1 = no active attribute) makes MoBu import a Null (verified).
+    // default (-1 = no active attribute) makes the DCC import a Null (verified).
     objects.push(node("Model", [L(meshModelId), S(objName(mesh.name, "Model")), S("Mesh")], [
       node("Version", [I(232)]),
       node("Properties70", [], [
@@ -566,7 +566,7 @@ export function writeAnimationFbx(clip: ResampledClip, opts: WriteAnimOpts = {})
     else OO(tc.a, tc.b);
   }
 
-  // ---- Definitions with PropertyTemplates (as Blender/assimp/the SDK write).
+  // ---- Definitions with PropertyTemplates (as the reference exporters/the SDK write).
   // The FBX SDK resolves class-default properties from these templates; files
   // without them are off-spec even if lenient readers cope.
   const fbxNodeTemplate = node("PropertyTemplate", [S("FbxNode")], [
@@ -704,9 +704,9 @@ export function writeAnimationFbx(clip: ResampledClip, opts: WriteAnimOpts = {})
 
   // ---- top-level ---------------------------------------------------------
   const header = node("FBXHeaderExtension", [], [
-    // 1004 = what MotionBuilder 2026 itself writes. MoBu's "legacy file"
-    // warning keys off FBXHeaderVersion (1003 warns — even Blender's output
-    // does); verified by diffing a MoBu-saved file against ours.
+    // 1004 = what the current target DCC itself writes. Its "legacy file"
+    // warning keys off FBXHeaderVersion (1003 warns — even the reference exporter's output
+    // does); verified by diffing a DCC-saved file against ours.
     node("FBXHeaderVersion", [I(1004)]),
     node("FBXVersion", [I(7700)]),
     node("EncryptionType", [I(0)]),
@@ -716,7 +716,7 @@ export function writeAnimationFbx(clip: ResampledClip, opts: WriteAnimOpts = {})
       node("Hour", [I(FBX_TIMESTAMP.hour)]), node("Minute", [I(FBX_TIMESTAMP.minute)]), node("Second", [I(FBX_TIMESTAMP.second)]), node("Millisecond", [I(FBX_TIMESTAMP.millisecond)]),
     ]),
     // The FBX SDK parses this exact "FBX SDK/FBX Plugins version X" form to
-    // date the file; unrecognized creators (incl. Blender's) trip MotionBuilder's
+    // date the file; unrecognized creators trip the target DCC's
     // "legacy file" warning.
     node("Creator", [S("FBX SDK/FBX Plugins version 2020.3.7")]),
     node("OtherFlags", [], [node("TCDefinition", [I(127)])]),
@@ -790,7 +790,7 @@ export function writeAnimationFbx(clip: ResampledClip, opts: WriteAnimOpts = {})
     ]),
   ]);
 
-  // Takes: MoBu builds its take list from THIS node, not from AnimationStacks
+  // Takes: the target DCC builds its take list from THIS node, not from AnimationStacks
   // alone (verified: a stack without a Take entry here doesn't show up).
   const takes = node("Takes", [], [
     node("Current", [S("")]),
@@ -821,7 +821,7 @@ export function writeAnimationFbx(clip: ResampledClip, opts: WriteAnimOpts = {})
   ];
 
   // 7700 = FBX SDK 2020+ format (same 64-bit binary layout as 7500).
-  // MotionBuilder 2026 shows "legacy file" for anything older — verified: it
-  // warns even on Blender's 7400 output, and stops warning at 7700.
+  // the current target DCC shows "legacy file" for anything older — verified:
+  // it warns even on reference 7400 output, and stops warning at 7700.
   return serializeFbxBinary(top, 7700);
 }

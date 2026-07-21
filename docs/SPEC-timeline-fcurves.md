@@ -1,7 +1,7 @@
 # Spec: Timeline v2 + F-Curve editor v2 + Filter stack
 
 Goal: close the mocap-cleanup workflow gap so WRYAnimator can replace
-MotionBuilder in the pipeline. The reference workflow being replaced:
+an external animation DCC in the pipeline. The reference workflow being replaced:
 open recording, find a bad section in the f-curves, select the affected
 channels (down to individual fingers), apply a filter to just that frame
 range, verify against the original, repeat. Today none of those steps is
@@ -11,16 +11,16 @@ whole-clip toggle scoped to hardcoded bone groups.
 
 Market reference points (feature parity targets):
 
-- MotionBuilder FCurve editor: channel tree, box-select keys, filters
+- A leading mocap DCC's f-curve editor: channel tree, box-select keys, filters
   applied to the selection (Butterworth, peak removal, smooth, key
   reducer, resample).
-- TriMotion Animation Optimizer (Blender): key reduction 50-90% with
+- A key-reduction add-on: reduction 50-90% with
   shape-preserving simplification, SELECTIVE per-bone simplification,
   density/statistics readout before and after.
-- Foot Lock (Blender): per-plant lock regions the user can see and
+- A foot-lock add-on: per-plant lock regions the user can see and
   retime individually (we auto-detect plants but expose no per-plant
   control).
-- AnimAide / Cascadeur: ease/blend-to-neighbor curve tools, physics
+- Curve-assist tools: ease/blend-to-neighbor curve tools, physics
   checks (out of scope for now, listed for orientation).
 
 ## 1. Timeline v2 (src/ui/transport.ts)
@@ -34,7 +34,7 @@ object passed to all three).
   Never conflate them. Zoom: wheel zooms around the cursor time;
   horizontal drag on the ruler (or middle-drag anywhere on the strip)
   pans; Home/press-F fits the whole clip (F fits the trim range when one
-  is set, like Maya frame-selection).
+  is set, standard DCC frame-selection).
 - **Frame ruler.** Adaptive tick labels (seconds at wide zoom, frames
   when zoomed past ~10 px/frame). Grid lines continue faintly through
   dope rows and curve view so keys visually align.
@@ -75,7 +75,7 @@ Two modes, toggled inside the curves panel:
 - Multi-select (ctrl/shift). Selecting a rig effector in the viewport
   scopes the tree to that limb (sync both ways where possible).
 - Per-row visibility eye (isolate curves) and a per-axis X/Y/Z toggle
-  strip like MoBu's channel boxes.
+  strip like DCC channel boxes.
 - The SAME tree selection is the scope for filters (section 3) and for
   key reduction (section 4). One selection model, three consumers.
 
@@ -134,7 +134,7 @@ interface CleanOp {
 - The timeline tick-mark canvas shows each op's range as a colored
   underline (existing marks channel).
 
-## 4. Key reduction v2 (TriMotion parity)
+## 4. Key reduction v2 (reduction parity)
 
 reduceKeys() exists (greedy, whole clip). Extend, in the Export tab:
 
@@ -143,7 +143,7 @@ reduceKeys() exists (greedy, whole clip). Extend, in the Export tab:
   selection or "all".
 - Statistics: before/after key counts per group, max positional error
   at chain ends (fk.ts can evaluate), shown in a small table before
-  export. TriMotion's headline feature is the confidence readout, not
+  export. The reference tool's headline feature is the confidence readout, not
   the algorithm.
 - Export-time only (FBX/VRMA writers); the internal clip stays dense.
 
