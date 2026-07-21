@@ -1208,6 +1208,40 @@ export class CurveView {
       this.drawEnvelope(g, w, model.times, ch, ch.color);
     }
 
+    // Per-curve labels at the right edge — with several bones selected the
+    // colors alone don't identify the lines.
+    if (this.tm && model.channels.length > 1 && model.channels.length <= 24) {
+      const t0 = model.times[0] ?? 0;
+      const tEnd = Math.min(this.tm.viewEnd, (model.times[model.times.length - 1] ?? 0) - t0);
+      let lo = 0, hi = model.times.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (model.times[mid] - t0 < tEnd) lo = mid + 1; else hi = mid;
+      }
+      const f = Math.max(0, lo - 1);
+      const labels: Array<{ text: string; color: string; y: number }> = [];
+      for (const ch of model.channels) {
+        if (!this.axisVis[ch.axis]) continue;
+        const v = ch.values[f];
+        if (v === undefined) continue;
+        labels.push({ text: ch.label, color: ch.color, y: this.y(v, ch.group) });
+      }
+      labels.sort((a, b) => a.y - b.y);
+      for (let i = 1; i < labels.length; i++) {
+        if (labels[i].y - labels[i - 1].y < 10) labels[i].y = labels[i - 1].y + 10;
+      }
+      g.font = "9px system-ui, sans-serif";
+      g.textAlign = "right";
+      for (const l of labels) {
+        g.strokeStyle = "rgba(10,12,16,0.85)";
+        g.lineWidth = 3;
+        g.strokeText(l.text, w - 4, l.y + 3);
+        g.fillStyle = l.color;
+        g.fillText(l.text, w - 4, l.y + 3);
+      }
+      g.textAlign = "left";
+    }
+
     this.drawDensePlayhead(g);
 
     // Title + value-at-playhead readout for the first channel.

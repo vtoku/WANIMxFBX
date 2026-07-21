@@ -2908,6 +2908,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         if (id) setTab("clip");
         renderObjPanel();
       },
+      onDelete: (id) => { deleteStripObject(id); },
     });
   }
 
@@ -3616,6 +3617,9 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         const input = body.querySelector("#fltVal") as HTMLInputElement;
         const out = body.querySelector("#fltOut") as HTMLOutputElement;
         input.focus();
+        // Before/after on the graph itself: ghost the unfiltered curves for
+        // the whole time the dialog is open.
+        transport?.curveView.setCompare(true);
 
         // Provisional op: lives in cleanOps (so the pipeline + timeline
         // underline see it) but stays out of undo history and the chip list.
@@ -3637,6 +3641,7 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         };
         const dropPreview = () => {
           window.clearTimeout(previewTimer);
+          transport?.curveView.setCompare(false);
           const i = cleanOps.indexOf(previewOp);
           if (i >= 0) cleanOps.splice(i, 1);
         };

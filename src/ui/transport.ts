@@ -90,7 +90,7 @@ export interface Transport {
   /** Colored range underlines (scoped filters, foot plants). */
   setRanges(ranges: TransportRange[]): void;
   /** Selectable lane objects under the track (filters, loop, warp, plants). */
-  setStripObjects(objects: StripObject[], cbs?: { onSelect(id: string | null): void }): void;
+  setStripObjects(objects: StripObject[], cbs?: { onSelect(id: string | null): void; onDelete?(id: string): void }): void;
   /** Highlight (or clear) the selected strip object. */
   selectStripObject(id: string | null): void;
   /** Mini dope sheet under the strip: per-effector key rows (empty = hidden). */
@@ -538,7 +538,7 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
 
   // ---- strip objects (selectable lane pills) -------------------------------
   let stripObjects: StripObject[] = [];
-  let stripCbs: { onSelect(id: string | null): void } | undefined;
+  let stripCbs: { onSelect(id: string | null): void; onDelete?(id: string): void } | undefined;
   let selectedStrip: string | null = null;
   const LANE_H = 14;
 
@@ -574,11 +574,17 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
         renderStripObjects();
         stripCbs?.onSelect(selectedStrip);
       });
+      // Right-click a pill = delete it outright (fastest removal path).
+      pill.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        stripCbs?.onDelete?.(o.id);
+      });
       objLanesEl.appendChild(pill);
     }
   }
 
-  function setStripObjects(objects: StripObject[], cbs?: { onSelect(id: string | null): void }) {
+  function setStripObjects(objects: StripObject[], cbs?: { onSelect(id: string | null): void; onDelete?(id: string): void }) {
     stripObjects = objects;
     if (cbs) stripCbs = cbs;
     if (selectedStrip && !objects.some((o) => o.id === selectedStrip)) {
