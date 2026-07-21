@@ -115,13 +115,15 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
   el.className = "transport-overlay";
   el.innerHTML = `
     <div class="t-main">
-      <button class="t-btn t-ico t-play" aria-label="Play/pause" title="Play/pause (Space). ←/→ step a frame, shift for 10.">${ICONS.pause}</button>
-      <select class="t-rate" title="Playback speed (review only, doesn't change the clip)">
-        <option value="0.25">¼×</option>
-        <option value="0.5">½×</option>
-        <option value="1" selected>1×</option>
-        <option value="2">2×</option>
-      </select>
+      <div class="t-left">
+        <button class="t-btn t-ico t-play" aria-label="Play/pause" title="Play/pause (Space). ←/→ step a frame, shift for 10.">${ICONS.pause}</button>
+        <select class="t-rate" title="Playback speed (review only, doesn't change the clip)">
+          <option value="0.25">¼×</option>
+          <option value="0.5">½×</option>
+          <option value="1" selected>1×</option>
+          <option value="2">2×</option>
+        </select>
+      </div>
       <div class="t-strip">
         <div class="t-ruler" aria-hidden="true"><canvas class="t-marks"></canvas></div>
         <div class="t-timeline" role="slider" tabindex="0" aria-label="Timeline and trim">
@@ -133,14 +135,26 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
         </div>
         <div class="t-playhead"></div>
       </div>
-      <button class="t-btn t-magnet" title="Snap key drags to other keys and the playhead">🧲</button>
-      <button class="t-btn t-fit" title="Fit the view to the clip (F fits the trim range when set)">Fit</button>
-      <span class="t-time">0:00.00 / 0:00.00</span>
-      <span class="t-framebox" title="Type a frame and press Enter to jump there">f <input class="t-frame" type="text" inputmode="numeric" size="5" value="0" /><span class="t-fps"></span></span>
-      <button class="t-btn t-setin" title="Set trim start to playhead">In</button>
-      <button class="t-btn t-setout" title="Set trim end to playhead">Out</button>
-      <button class="t-btn t-reset" title="Clear trim">Reset</button>
-      <button class="t-btn t-dope-toggle" hidden title="Show/hide per-part key rows">Keys ▾</button>
+      <div class="t-side">
+        <div class="t-side-row">
+          <span class="t-time">0:00.00<span class="t-dim"> / 0:00.00</span></span>
+          <span class="t-framebox" title="Type a frame and press Enter to jump there">f <input class="t-frame" type="text" inputmode="numeric" size="5" value="0" /><span class="t-fps"></span></span>
+        </div>
+        <div class="t-side-row">
+          <span class="t-trimro t-dim" title="Trim length (playback loop + export range)"></span>
+          <button class="t-btn t-setin" title="Set trim start to playhead">In</button>
+          <button class="t-btn t-setout" title="Set trim end to playhead">Out</button>
+          <button class="t-btn t-reset" title="Clear trim">Reset</button>
+          <span class="t-gap"></span>
+          <button class="t-btn t-ico t-magnet" aria-label="Snap magnet" title="Snap key drags to other keys and the playhead">${ICONS.magnet}</button>
+          <button class="t-btn t-fit" title="Fit the view to the clip (F fits the trim range when set)">Fit</button>
+          <span class="t-seg" role="tablist" aria-label="Under-strip panel">
+            <button data-view="keys" title="Per-part key rows">Keys</button>
+            <button data-view="curves" class="t-dope-toggle" title="Curve editor">Curves</button>
+            <button data-view="none" title="Hide the panel">Hide</button>
+          </span>
+        </div>
+      </div>
     </div>
     <div class="t-dope" hidden>
       <div class="t-dope-rows"></div>
@@ -163,6 +177,7 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
   const outH = el.querySelector(".t-out") as HTMLElement;
   const playhead = el.querySelector(".t-playhead") as HTMLElement;
   const timeText = el.querySelector(".t-time") as HTMLElement;
+  const trimRo = el.querySelector(".t-trimro") as HTMLElement;
   const frameInput = el.querySelector(".t-frame") as HTMLInputElement;
   const fpsLabel = el.querySelector(".t-fps") as HTMLElement;
   const magnetBtn = el.querySelector(".t-magnet") as HTMLButtonElement;
@@ -178,6 +193,8 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
     outH.style.left = `${pct(trimEnd)}%`;
     region.style.left = `${pct(trimStart)}%`;
     region.style.width = `${pct(trimEnd) - pct(trimStart)}%`;
+    const len = trimEnd - trimStart;
+    trimRo.textContent = len < duration - 0.02 ? `trim ${fmt(len)}` : "full clip";
   }
   const trimCbs = new Set<(trim: { start: number; end: number }) => void>();
   function applyTrim() {
@@ -215,8 +232,7 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
       playBtn.innerHTML = s.playing ? ICONS.pause : ICONS.play;
     }
     playhead.style.left = `${pct(s.time)}%`;
-    const len = trimEnd - trimStart;
-    timeText.textContent = `${fmt(s.time)} / ${fmt(duration)}  ·  trim ${fmt(len)}`;
+    timeText.innerHTML = `${fmt(s.time)}<span class="t-dim"> / ${fmt(duration)}</span>`;
     if (document.activeElement !== frameInput && frames > 1) frameInput.value = String(tm.frameOf(s.time));
     curveView.setPlayhead(s.time);
   });
@@ -591,7 +607,8 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
   // ---- mini dope sheet ------------------------------------------------------
   const dopeEl = el.querySelector(".t-dope") as HTMLElement;
   const dopeRowsEl = el.querySelector(".t-dope-rows") as HTMLElement;
-  const dopeToggle = el.querySelector(".t-dope-toggle") as HTMLButtonElement;
+  const segEl = el.querySelector(".t-seg") as HTMLElement;
+  const segBtns = Array.from(segEl.querySelectorAll<HTMLButtonElement>("button"));
   let dopeCount = 0;
 
   // Rows + curves must line up with the strip: pad to the timeline's range.
@@ -620,8 +637,12 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
   const syncDopeVisibility = () => {
     dopeEl.hidden = view !== "keys" || dopeCount === 0;
     curveView.el.hidden = view !== "curves" || !curveAvailable;
-    dopeToggle.hidden = dopeCount === 0 && !curveAvailable;
-    dopeToggle.textContent = view === "keys" ? "Keys ▾" : view === "curves" ? "Curves ▾" : "Panels ▸";
+    segEl.hidden = dopeCount === 0 && !curveAvailable;
+    for (const b of segBtns) {
+      const v = b.dataset.view as typeof view;
+      b.classList.toggle("active", v === view);
+      b.disabled = (v === "keys" && dopeCount === 0) || (v === "curves" && !curveAvailable);
+    }
   };
   function cyclePanel() {
     const order: Array<typeof view> = ["keys", "curves", "none"];
@@ -640,7 +661,9 @@ export function createTransport(preview: PreviewScene, duration: number, frames 
     syncDopeVisibility();
     alignDope();
   }
-  dopeToggle.addEventListener("click", cyclePanel);
+  for (const b of segBtns) {
+    b.addEventListener("click", () => setPanelView(b.dataset.view as typeof view));
+  }
 
   function setDope(rows: DopeRow[], cbs?: TransportKeyCallbacks) {
     dopeCount = rows.length;
