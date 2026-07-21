@@ -1788,6 +1788,10 @@ kbd {
    newest on top, active highlighted, mute + weight per layer). */
 .t-panels { position: relative; }
 
+/* Keys view can be a single short hint row — keep room for the layers rail
+   whenever it's visible so the stack doesn't collapse to a sliver. */
+.t-panels:has(.t-rail:not([hidden])) { min-height: 150px; }
+
 .t-rail {
   position: absolute;
   top: 2px;
