@@ -320,7 +320,9 @@ export class PreviewScene {
 
   private attachFace() {
     const face = this.face;
-    if (!face || !this.clip || this.headIndex < 0 || !this.clip.face || !face.hasMorphs()) return;
+    // No face DATA still gets the head MESH — a clip without blendshapes
+    // (rest pose, synthetic clips) would otherwise render headless.
+    if (!face || !this.clip || this.headIndex < 0 || !face.hasMorphs()) return;
     const head = this.boneNodes[this.headIndex];
     if (!head) return;
     face.group.parent?.remove(face.group);
@@ -334,9 +336,13 @@ export class PreviewScene {
     face.group.position.set(0, BODY_HEAD_LIFT_M * k, 0);
     face.group.rotation.set(0, 0, 0);
     face.group.visible = this.faceVisible;
-    face.bindNames(this.clip.face.names);
+    if (this.clip.face) {
+      face.bindNames(this.clip.face.names);
+      this.faceWeights = new Float32Array(this.clip.face.names.length);
+    } else {
+      this.faceWeights = null; // head shown, morphs idle
+    }
     if (this.aidSilhouette) this.applySilhouette(); // flat-swap the face meshes
-    this.faceWeights = new Float32Array(this.clip.face.names.length);
   }
 
   private onWindowResize = () => this.resize();

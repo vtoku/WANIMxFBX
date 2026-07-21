@@ -18,24 +18,26 @@ const errors = [];
 page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
 page.on("pageerror", (e) => errors.push(String(e)));
 
-// 1. Boot: editor chrome + canvas + dim prompt, menu bar, NO dropzone, and a
-//    disabled transport — all with no file loaded.
+// 1. Boot: editor chrome + canvas + menu bar, NO dropzone, and the TEMPLATE
+//    scene (bundled body + sample idle) loaded with a live transport.
 await page.goto(URL, { waitUntil: "networkidle" });
 const bootEditor = await page.$eval("#loaded-state", (el) => !el.hidden);
 const bootCanvas = !!(await page.$("#viewport canvas"));
-const bootPrompt = await page.$eval("#empty-state", (el) => !el.hidden);
 const menuLabels = await page.$$eval("#menubar .menu-btn", (b) => b.map((x) => x.textContent));
 const bootMenus = ["File", "Edit", "View", "Help"].every((l) => menuLabels.includes(l));
 const noDropzone = !(await page.$("#dropzone"));
-const transportDisabledEmpty = await page.$eval(".transport-overlay .t-play", (b) => b.disabled).catch(() => false);
-console.log("boot: editor", bootEditor, "· canvas", bootCanvas, "· prompt", bootPrompt,
-  "· menus", bootMenus, "· no dropzone", noDropzone, "· transport disabled", transportDisabledEmpty);
+await page.waitForSelector(".transport-overlay .t-play:not([disabled])", { timeout: 20000 });
+await page.waitForSelector("#dock .stats", { timeout: 20000, state: "attached" });
+const bootSample = (await page.$eval("#dock .stats", (el) => el.textContent ?? "")).includes("Sample idle");
+const bootPromptHidden = await page.$eval("#empty-state", (el) => el.hidden);
+console.log("boot: editor", bootEditor, "· canvas", bootCanvas, "· template scene", bootSample,
+  "· prompt hidden", bootPromptHidden, "· menus", bootMenus, "· no dropzone", noDropzone);
 
 // 1b. Help > Keyboard shortcuts overlay lists every shared-table entry.
 // By label, not index — menu count changes as menus are added (Time, etc.).
 await page.click("#menubar .menu-btn:has-text('Help')");
 await page.waitForSelector(".menu-panel");
-await page.click(".menu-panel .menu-item"); // first Help item = Keyboard shortcuts
+await page.click(".menu-panel .menu-item:has-text('Keyboard shortcuts')");
 await page.waitForSelector(".shortcuts-body");
 const overlayKeys = await page.$$eval(".shortcuts-body kbd", (k) => k.map((x) => x.textContent));
 const tableKeys = await page.evaluate(() => (window.__shortcuts ?? []).map((s) => s.keys));
@@ -44,12 +46,18 @@ console.log("shortcuts overlay: table entries", tableKeys.length, "· missing", 
 await page.keyboard.press("Escape");
 
 // 2. Load a file through the input — prompt hides, transport enables, dock fills.
+const wanimName = WANIM.split(/[\\/]/).pop();
 await page.setInputFiles("#file-input", {
-  name: WANIM.split(/[\\/]/).pop(),
+  name: wanimName,
   mimeType: "application/octet-stream",
   buffer: readFileSync(WANIM),
 });
-await page.waitForSelector("#dock .stats", { timeout: 20000, state: "attached" });
+// The template scene already has stats up — wait for THIS file's name.
+await page.waitForFunction(
+  (n) => document.querySelector("#dock .stats")?.textContent?.includes(n),
+  wanimName,
+  { timeout: 30000 },
+);
 const promptGone = await page.$eval("#empty-state", (el) => el.hidden);
 const transportEnabled = await page.$eval(".transport-overlay .t-play", (b) => !b.disabled).catch(() => false);
 console.log("after load: prompt hidden", promptGone, "· transport enabled", transportEnabled);
@@ -62,27 +70,32 @@ const restoredName = await page.$eval("#dock h2", (el) => el.textContent);
 const note = await page.$eval("#rigCacheNote", (el) => el.textContent).catch(() => "");
 console.log("restore: stats visible · name", JSON.stringify(restoredName), "· note", JSON.stringify(note));
 
-// 4. "Load another file" (Info tab) → empty editor again, session forgotten.
+// 4. "Load another file" (Info tab) → back to the empty editor (no center
+//    overlay — the editbar hint points at File), session forgotten; the next
+//    boot lands on the template scene, NOT the forgotten session.
 await page.click('.dock-tab[data-tab="info"]');
 await page.click("#reset");
 await page.waitForTimeout(1200);
-const promptBack = await page.$eval("#empty-state", (el) => !el.hidden);
-console.log("reset: prompt back", promptBack);
+const promptBack = (await page.$eval(".editbar .eb-hint", (el) => el.textContent ?? "").catch(() => ""))
+  .includes("Open a recording");
+console.log("reset: editbar hint back", promptBack);
 await page.reload({ waitUntil: "networkidle" });
-await page.waitForTimeout(2500);
-const staysEmpty = await page.$eval("#empty-state", (el) => !el.hidden);
-console.log("reload after reset: stays empty", staysEmpty);
+await page.waitForSelector("#dock .stats", { timeout: 20000, state: "attached" });
+const staysEmpty = (await page.$eval("#dock .stats", (el) => el.textContent ?? "")).includes("Sample idle");
+console.log("reload after reset: template scene (session forgotten)", staysEmpty);
 
 // 5. Body-only session: a VRM with no recording gives a working session with
 //    the Shogun export; dropping a recording on top upgrades in place.
 const VRM = process.env.VRM_SAMPLE ?? `${process.env.USERPROFILE ?? ""}\\Downloads\\Flayon.vrm`;
 let bodyOnlyOk = true;
+let vrmAvailable = true;
 try {
   readFileSync(VRM);
 } catch {
+  vrmAvailable = false;
   console.log("body-only: SKIP (no VRM sample at", VRM + ")");
 }
-if (bodyOnlyOk) {
+if (vrmAvailable) {
   try {
     await page.setInputFiles("#file-input", {
       name: VRM.split(/[\\/]/).pop(),
@@ -119,7 +132,7 @@ if (bodyOnlyOk) {
 await page.screenshot({ path: "scripts/boot-shot.png" });
 console.log("errors:", errors.length ? errors : "none");
 await browser.close();
-const ok = bootEditor && bootCanvas && bootPrompt && bootMenus && noDropzone && transportDisabledEmpty
+const ok = bootEditor && bootCanvas && bootSample && bootPromptHidden && bootMenus && noDropzone
   && missingKeys.length === 0 && promptGone && transportEnabled && restoredName && promptBack && staysEmpty
   && bodyOnlyOk && !errors.length;
 console.log(ok ? "OK" : "PROBE FAILED");

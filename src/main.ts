@@ -274,9 +274,15 @@ const menuDefs: MenuDef[] = [
   {
     label: "File",
     items: () => [
-      // New = forget the cached session and reboot to the default stage; a
-      // reload guarantees no state leaks from the previous session.
-      { label: "New scene", action: () => { void clearLastSession().then(() => window.location.reload()); } },
+      // New = forget the cached session AND the template scene's cached edits,
+      // then reboot; a reload guarantees no state leaks from the previous
+      // session, landing on a truly fresh template scene.
+      { label: "New scene", action: () => {
+        for (const k of Object.keys(localStorage)) {
+          if (k.startsWith(`wanimrig:${SAMPLE_NAME}:`)) localStorage.removeItem(k);
+        }
+        void clearLastSession().then(() => window.location.reload());
+      } },
       { separator: true },
       { label: "Open recording...", hotkey: keyFor("open"), action: openRecordingPicker },
       { label: "Open scene...", action: openScenePicker },
@@ -3949,8 +3955,10 @@ function showEmptyEditor() {
     preview.setBodyMode("human");
     preview.pause();
   }
-  emptyState.hidden = false;
-  editbar.innerHTML = `<span class="eb-hint">Nothing loaded. Open a recording or a VRM/FBX from File, or press Ctrl+O</span>`;
+  // No center overlay — the default stage speaks for itself; the editbar
+  // hint below is enough of a pointer.
+  emptyState.hidden = true;
+  editbar.innerHTML = `<span class="eb-hint">Open a recording or a VRM/FBX from File, or press Ctrl+O</span>`;
   const emptyTabs: [string, string, string][] = [
     ["clean", "Clean", "Open a recording to clean up its motion."],
     ["rig", "Rig", "Open a recording to pose and layer edits."],
@@ -3994,13 +4002,15 @@ async function handleFile(file: File) {
   document.querySelector(".restore-bar")?.remove(); // opening supersedes the offer
   // Preference: confirm before dropping the current session for a new file
   // (edits stay cached per recording, so nothing is truly lost). A VRM/GLB
-  // dropped onto a live session just swaps the body, so it never prompts.
+  // dropped onto a live session just swaps the body, so it never prompts —
+  // and neither does replacing the boot template scene.
   const lower = file.name.toLowerCase();
   const isBodyAsset = lower.endsWith(".vrm") || lower.endsWith(".glb");
-  if (loaded && !isBodyAsset && getPref("confirmReplace") &&
+  if (loaded && !sampleActive && !isBodyAsset && getPref("confirmReplace") &&
       !window.confirm("Open a different file? Your edits stay saved for the current recording.")) {
     return;
   }
+  sampleActive = false;
   userOpenedFile = true;
   errorEl.hidden = true;
   if (lower.endsWith(".json")) {
@@ -4394,20 +4404,40 @@ createAidStrip(viewport, { onFrame: () => preview?.frameCharacter() });
 applyAidPrefs();
 onPrefsChange(applyAidPrefs);
 showEmptyEditor();
+// The boot TEMPLATE scene: the bundled body playing an original sample idle,
+// so the editor always opens with something alive to scrub, filter, and
+// export. Loaded fromRestore=true so the REAL cached session is untouched.
+let sampleActive = false;
+const SAMPLE_NAME = "Sample idle.wanim";
+async function loadSampleScene(): Promise<boolean> {
+  try {
+    const res = await fetch("sample-idle.wanim");
+    if (!res.ok) return false;
+    const bytes = await res.arrayBuffer();
+    if (userOpenedFile || loaded) return true; // something else won the race
+    await loadWanim(SAMPLE_NAME, bytes, true);
+    sampleActive = true;
+    return true;
+  } catch {
+    return false; // offline/dev quirk: the empty editor stays up
+  }
+}
+
 // A session that was live moments ago (refresh, accidental close) restores
 // seamlessly; anything older is OFFERED, not forced — with proper open/save
 // in place, silently reopening an old session reads as losing your new one.
 const AUTO_RESTORE_MS = 15 * 60_000;
-window.addEventListener("beforeunload", () => { if (loaded) touchLastSession(); });
+window.addEventListener("beforeunload", () => { if (loaded && !sampleActive) touchLastSession(); });
 void (async () => {
   const last = await loadLastSession();
-  if (!last || userOpenedFile || loaded) return;
-  if (lastSessionAgeMs() < AUTO_RESTORE_MS) {
+  if (userOpenedFile || loaded) return;
+  if (last && lastSessionAgeMs() < AUTO_RESTORE_MS) {
     restoredSessionName = last.name;
     await loadWanim(last.name, last.bytes, true);
-  } else {
-    offerSessionRestore(last);
+    return;
   }
+  await loadSampleScene();
+  if (last && !userOpenedFile) offerSessionRestore(last);
 })();
 
 /** Unobtrusive bar offering to reopen an older cached session. */
@@ -4421,7 +4451,8 @@ function offerSessionRestore(last: { name: string; bytes: ArrayBuffer }) {
   restore.textContent = "Restore";
   restore.addEventListener("click", () => {
     bar.remove();
-    if (userOpenedFile || loaded) return;
+    if (userOpenedFile) return; // the template scene is fine to replace
+    sampleActive = false;
     restoredSessionName = last.name;
     void loadWanim(last.name, last.bytes, true);
   });
