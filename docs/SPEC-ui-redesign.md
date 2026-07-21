@@ -116,7 +116,7 @@ Pages by selection:
 Retires: Clean, Rig, and Info as task tabs. The dock becomes ONE inspector
 panel (collapsible as today).
 
-### 4. Export = one dialog, launched from Download
+### 4. Export = one dialog, launched from File → Export…
 
 Everything on the Export tab (format, bone names, rest pose, proportions,
 spine, face/body mesh, fps + speed + live readout, reduction tolerances +
