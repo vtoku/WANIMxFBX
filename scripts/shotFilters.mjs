@@ -42,7 +42,7 @@ await page.waitForTimeout(100);
 await page.click(".t-setout");
 await page.waitForTimeout(100);
 
-await page.click('.dock-tab[data-tab="clean"]');
+await page.click('.dock-tab[data-tab="clip"]');
 await page.click("#filterAdd");
 await page.waitForTimeout(600);
 

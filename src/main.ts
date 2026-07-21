@@ -181,7 +181,7 @@ interface MenuActions {
   /** Selection-set names for the View menu (D1). */
   selectionSetNames(): string[];
   recallSelectionSet(name: string): void;
-  setDockTab(t: "clean" | "rig" | "export" | "info"): void;
+  setDockTab(t: "clip" | "rig" | "export"): void;
   cyclePanels(): void;
   toggleGhost(): void;
   ghostOn(): boolean;
@@ -340,10 +340,9 @@ const menuDefs: MenuDef[] = [
   {
     label: "View",
     items: () => [
-      { label: "Clean panel", enabled: hasClip, action: () => menuActions?.setDockTab("clean") },
+      { label: "Clip panel", enabled: hasClip, action: () => menuActions?.setDockTab("clip") },
       { label: "Rig panel", enabled: hasClip, action: () => menuActions?.setDockTab("rig") },
       { label: "Export panel", enabled: hasClip, action: () => menuActions?.setDockTab("export") },
-      { label: "Info panel", enabled: hasClip, action: () => menuActions?.setDockTab("info") },
       { separator: true },
       { label: "Cycle keys / curves / hidden", enabled: hasClip, action: () => menuActions?.cyclePanels() },
       { label: "Ghost overlay", checked: () => !!menuActions?.ghostOn(), enabled: hasClip, action: () => menuActions?.toggleGhost() },
@@ -648,14 +647,21 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
   // ---- dock: task panels in tabs ------------------------------------------
   dock.innerHTML = `
     <nav class="dock-tabs" role="tablist">
-      <button class="dock-tab active" data-tab="clean">Clean</button>
+      <button class="dock-tab active" data-tab="clip">Clip</button>
       <button class="dock-tab" data-tab="rig">Rig</button>
       <button class="dock-tab" data-tab="export">Export</button>
-      <button class="dock-tab" data-tab="info">Info</button>
     </nav>
     <div class="dock-body">
 
-    <div class="tab active" id="tab-clean">
+    <div class="tab active" id="tab-clip">
+    <h2>${name}</h2>
+    <dl class="stats">
+      ${rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")}
+    </dl>
+    <div class="rig-row">
+      <button id="sceneSave" class="button ghost" title="Bundles the recording plus every edit and setting into one .scene.json. Drop it on the app later to pick up exactly where you left off.">Save scene…</button>
+      <button id="reset" class="button ghost">Load another file</button>
+    </div>
     <h4 class="group">Feet</h4>
     <label class="field">
       <span>Pin planted feet</span>
@@ -931,21 +937,12 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     <p id="shogunNote" class="clean-stats"></p>
     </div>
 
-    <div class="tab" id="tab-info">
-    <h2>${name}</h2>
-    <dl class="stats">
-      ${rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")}
-    </dl>
-    <button id="sceneSave" class="button ghost" title="Bundles the recording plus every edit and setting into one .scene.json. Drop it on the app later to pick up exactly where you left off.">Save scene…</button>
-    <span class="hint-i" title="A scene file contains the recording, your layers, modifiers, cleaning and export settings, and the trim. One file reopens the whole session. A custom VRM body is embedded too, so the file is the whole project.">ⓘ</span>
-    <button id="reset" class="button ghost">Load another file</button>
-    </div>
 
     </div>
   `;
 
   // Tab switching; rig handles + dope sheet only show on the Rig tab.
-  let activeTab = "clean";
+  let activeTab = "clip";
   const tabBtns = Array.from(dock.querySelectorAll<HTMLButtonElement>(".dock-tab"));
   function syncRigVisibility() {
     preview?.setRigEnabled(activeTab === "rig" && rigLayers.length > 0);
@@ -3474,14 +3471,17 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       // Single mapped bone -> select its viewport effector (two-way sync). This
       // is how per-finger FK works: a finger row selects its (hidden) effector,
       // which pops the gizmo on that finger chain.
-      if (activeTab === "rig") {
-        if (bones.size === 1) {
-          const eff = effectorForBone([...bones][0]);
-          if (eff) preview?.selectEffector(eff.id);
-        } else if (selectedEffector && effectorDef(selectedEffector).hidden) {
-          // Leaving a single finger row: drop the transient finger gizmo.
-          preview?.selectEffector(null);
+      if (bones.size === 1) {
+        // Selection ROUTER: picking one bone anywhere routes the inspector
+        // to its effector page (the Rig tab, until the inspector lands).
+        const eff = effectorForBone([...bones][0]);
+        if (eff) {
+          if (activeTab !== "rig") setTab("rig");
+          preview?.selectEffector(eff.id);
         }
+      } else if (activeTab === "rig" && selectedEffector && effectorDef(selectedEffector).hidden) {
+        // Leaving a single finger row: drop the transient finger gizmo.
+        preview?.selectEffector(null);
       }
       renderFilters();
     },
@@ -4150,10 +4150,9 @@ function showEmptyEditor() {
   emptyState.hidden = true;
   editbar.innerHTML = `<span class="eb-hint">Open a recording or a VRM/FBX from File, or press Ctrl+O</span>`;
   const emptyTabs: [string, string, string][] = [
-    ["clean", "Clean", "Open a recording to clean up its motion."],
+    ["clip", "Clip", "Open a <code>.wanim</code>/<code>.fbx</code> recording, a VRM/GLB body, or a saved <code>.scene.json</code>."],
     ["rig", "Rig", "Open a recording to pose and layer edits."],
     ["export", "Export", "Open a recording, or a VRM/GLB body for a Shogun target rig."],
-    ["info", "Info", "Open a <code>.wanim</code>/<code>.fbx</code>, a VRM/GLB body, or a saved <code>.scene.json</code>."],
   ];
   dock.innerHTML = `
     <nav class="dock-tabs" role="tablist">
@@ -4427,13 +4426,20 @@ function buildBodyPanel(name: string, bytes: ArrayBuffer, mappedBones: number, s
 
   dock.innerHTML = `
     <nav class="dock-tabs" role="tablist">
-      <button class="dock-tab active" data-tab="clean">Clean</button>
+      <button class="dock-tab active" data-tab="clip">Clip</button>
       <button class="dock-tab" data-tab="rig">Rig</button>
       <button class="dock-tab" data-tab="export">Export</button>
-      <button class="dock-tab" data-tab="info">Info</button>
     </nav>
     <div class="dock-body">
-      <div class="tab active" id="tab-clean"><p class="note">Needs a recording. Drop a <code>.wanim</code> or <code>.fbx</code> to animate this body.</p></div>
+      <div class="tab active" id="tab-clip">
+        <h2>${name}</h2>
+        <dl class="stats">${rows.map(([k, v]) => `<div><dt>${k}</dt><dd id="bodyStat-${k.replace(/\s+/g, "")}">${v}</dd></div>`).join("")}</dl>
+        <p class="note">Body-only session. Drop a <code>.wanim</code> or <code>.fbx</code> to animate this body.</p>
+        <div class="rig-row">
+          <button id="sceneSave" class="button ghost" title="Bundles this body and its export settings into one .scene.json.">Save scene…</button>
+          <button id="reset" class="button ghost">Load another file</button>
+        </div>
+      </div>
       <div class="tab" id="tab-rig"><p class="note">Needs a recording. Drop a <code>.wanim</code> or <code>.fbx</code> to pose this body.</p></div>
       <div class="tab" id="tab-export">
         <h4 class="group">Shogun target rig <span class="hint-i" title="A static, world-aligned skeleton plus skinned mesh built straight from your loaded VRM body, for use as a Vicon Shogun retarget target. No animation is baked in.">ⓘ</span></h4>
@@ -4449,12 +4455,6 @@ function buildBodyPanel(name: string, bytes: ArrayBuffer, mappedBones: number, s
           <button id="shogunDl" class="button ghost">Shogun target rig (.fbx)</button>
         </div>
         <p id="shogunNote" class="clean-stats"></p>
-      </div>
-      <div class="tab" id="tab-info">
-        <h2>${name}</h2>
-        <dl class="stats">${rows.map(([k, v]) => `<div><dt>${k}</dt><dd id="bodyStat-${k.replace(/\s+/g, "")}">${v}</dd></div>`).join("")}</dl>
-        <button id="sceneSave" class="button ghost" title="Bundles this body and its export settings into one .scene.json.">Save scene…</button>
-        <button id="reset" class="button ghost">Load another file</button>
       </div>
     </div>
   `;

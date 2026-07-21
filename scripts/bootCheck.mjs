@@ -73,7 +73,7 @@ console.log("restore: stats visible · name", JSON.stringify(restoredName), "· 
 // 4. "Load another file" (Info tab) → back to the empty editor (no center
 //    overlay — the editbar hint points at File), session forgotten; the next
 //    boot lands on the template scene, NOT the forgotten session.
-await page.click('.dock-tab[data-tab="info"]');
+await page.click('.dock-tab[data-tab="clip"]');
 await page.click("#reset");
 await page.waitForTimeout(1200);
 const promptBack = (await page.$eval(".editbar .eb-hint", (el) => el.textContent ?? "").catch(() => ""))
