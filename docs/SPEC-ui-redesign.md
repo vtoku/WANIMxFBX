@@ -118,14 +118,29 @@ panel (collapsible as today).
 
 ### 4. Export = one dialog, launched from File → Export…
 
-Everything on the Export tab (format, bone names, rest pose, proportions,
-spine, face/body mesh, fps + speed + live readout, reduction tolerances +
-analyze) consolidates into an Export dialog opened from File → Export… (Ctrl+E).
-The dialog owns the output name, format, all settings, and the Download
-action — one place, remembered between opens.
+One dialog (File → Export…, Ctrl+E) organized by TARGET, not by container —
+you pick where the file is going, and only that target's options show:
 
-Retires: the Export tab; the Rig-tab key-reduction analyzer (it moves into
-the Export dialog next to the tolerances it informs).
+- **FBX — Unity / Unreal / DCC** — the animation take: bone-name scheme
+  (HumanBodyBones vs HumanIK), rest pose, proportions, spine distribution,
+  face blendshapes, body mesh, reduction tolerances + the analyzer.
+- **FBX — Shogun target rig** — the mocap-solver flavor: fixes up the loaded
+  VRM the way the sibling VRM→Shogun converter does, with its options in the
+  dialog (T-pose/rest normalization, naming template, mesh strip/keep,
+  scale). Requires a VRM body; the dialog says so and offers File → Open
+  body when one isn't loaded.
+- **VRMA** — Warudo / VSeeFace / Unity expression + humanoid animation.
+- **WANIM** — back into Warudo.
+
+Shared across targets: output name, trim range readout, frame rate + speed
+with the live frame-count readout. Settings are remembered per target.
+
+Import mirrors this: File → Open… accepts .wanim / .fbx / .scene.json / VRM/
+GLB with type detection (as today) — one entry point, no format submenus.
+
+Retires: the Export tab, the separate "Export Shogun target rig" menu item
+and tab section (now the Shogun preset), and the Rig-tab key-reduction
+analyzer (it moves next to the tolerances it informs).
 
 ### 5. Editbar becomes a real app TOOLBAR
 
@@ -153,8 +168,8 @@ ACTION tools live on the toolbar. Version text moves to Help → About.
 
 ### 6. Menus
 
-- **File** — New scene, Open recording/scene/body, Recent, Save scene (As),
-  Export… (dialog), Export preview video…
+- **File** — New scene, Open… (any supported type), Recent, Save scene (As),
+  Export… (target-preset dialog), Export preview video…
 - **Edit** — Undo, Redo, Copy/Paste keys, Delete, Preferences.
 - **Select** *(new)* — effectors (Hips, hands, feet…), selection sets,
   Select all keys in trim, Clear selection.
