@@ -801,6 +801,12 @@ export class CurveView {
     if (this.mode === "channels") this.refreshDense();
   }
 
+  /** The tree's CURRENT bone selection — the authoritative filter scope
+   *  (host-side copies go stale when the tree is synced without a callback). */
+  getChannelSelection(): Set<string> {
+    return this.tree.getSelected();
+  }
+
   /** Drop the Channels-mode band selection (host menu "Clear selection"). */
   clearChannelSpan() {
     this.chanSpan = null;

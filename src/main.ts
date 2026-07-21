@@ -1656,7 +1656,12 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
     onHand: (side) => { picker.openFingers(side); handPoseWrap.hidden = false; },
     onFinger: (bone) => {
       const eff = effectorForBone(bone);
-      if (eff) { preview?.selectEffector(eff.id); transport?.curveView.syncTreeSelection([bone]); }
+      if (eff) {
+        preview?.selectEffector(eff.id);
+        transport?.curveView.syncTreeSelection([bone]);
+        channelSelection = new Set([bone]);
+        renderFilters();
+      }
     },
     onPin: (id) => {
       if (!effectorDef(id).chain) return;
@@ -2448,6 +2453,8 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         const def = effectorDef(e);
         const bones = def.chain ? [def.chain.root, def.chain.mid, def.bone] : [def.bone];
         transport?.curveView.syncTreeSelection(bones);
+        channelSelection = new Set(bones); // keep the filter scope in step
+        renderFilters();
       }
       updateRigEditor();
     },
@@ -2948,7 +2955,12 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
    * Shared by the Filters panel button and the Channels-mode band menu. */
   function addCleanOpScoped(filter: CleanFilter, span: { t0: number; t1: number }): boolean {
     if (!loaded) return false;
-    if (!channelSelection.size) {
+    // Read the scope from the TREE, not the cached copy — viewport/picker
+    // selection syncs the tree without firing onSelect, so the copy can be
+    // empty while the tree plainly shows selected bones.
+    const scope = transport?.curveView.getChannelSelection() ?? channelSelection;
+    if (scope.size) channelSelection = scope;
+    if (!scope.size) {
       showError("Select the bones first: open the Rig timeline's Channels view and pick channels (a group or single fingers).");
       return false;
     }
