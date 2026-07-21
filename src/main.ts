@@ -12,7 +12,7 @@ import {
   applyRigLayers, nearestFrame,
   effectorDef, effectorForBone, effectorColor, retimeKeys, keyFullPose,
   bakeRange, bakeRangeAsync, dirtyRange, unionRange, fkDragRef, setKeyEase, reduceKeys, smoothKeys,
-  sampleTrackPos, sampleTrackRot, unwrapEulerKeys, matchKeys, flattenKeysToFirst, blendKeysToward,
+  sampleTrackPos, sampleTrackRot, unwrapEulerKeys, matchKeys, flattenKeysToFirst, blendKeysToward, setChannelValues,
   stackPoseThrough, belowStackPose, clonePose, solveEffectorOnPose, captureBoneKeys, applyLayersToPose, convertLayerMode,
   capturePinTargets, distributeWristTwist,
   defaultIkfkBlend, limbForEffector, blendChainToFK, solvePoleOnPose, bodyPartBones,
@@ -23,7 +23,7 @@ import { worldFromLocal, type FramePose } from "./convert/fk.ts";
 import { vsub, vadd, vlen, vnorm, quatFromTo } from "./convert/ik.ts";
 import { applyModifiers, defaultModifiers, applyReach, anyReach } from "./rig/modifiers.ts";
 import { applyTimeWarp, warpMaps, type WarpKey } from "./rig/timewarp.ts";
-import { quatMul, quatDot, quatNormalize, quatToEulerZYX, eulerZYXToQuat, RAD2DEG } from "./convert/quat.ts";
+import { quatMul, quatDot, quatNormalize, quatToEulerZYX, RAD2DEG } from "./convert/quat.ts";
 import type { CurveEase, DenseModel, DenseChannel, ChannelsConfig } from "./ui/curves.ts";
 import {
   buildChannelGroups, groupBones, boneLabel,
@@ -1959,43 +1959,49 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
         { duration: rigBaseClip?.duration ?? 0, title: `${def.label} · ${layer.name}`, channels },
         {
           onValueStart: () => pushHistory(),
-          onValue: (group, axis, time, value) => {
+          onValues: (edits) => {
+            // ONE batched write + ONE rebake per pointer move — per-key
+            // rebakes made big selections stutter. setChannelValues edits
+            // rotations on the unwrapped triple (euler-safe), batched per key.
             const lay = rigLayers[activeLayerIdx];
             const tr = lay && selectedEffector ? getTrack(lay, selectedEffector) : null;
-            if (!tr || !lay) return;
-            if (group === "pos") {
-              const k = tr.posKeys.find((kk) => Math.abs(kk.time - time) < 1e-3);
-              if (k) k.v[axis] = value / 100;
-            } else {
-              const ki = tr.rotKeys.findIndex((kk) => Math.abs(kk.time - time) < 1e-3);
-              if (ki >= 0) {
-                // Edit against the DISPLAYED (unwrapped) triple — mixing the
-                // dragged axis into the canonical extraction would silently
-                // switch euler representations and warp the rotation.
-                const e = unwrapEulerKeys(tr.rotKeys)[ki];
-                e[axis] = value / RAD2DEG;
-                tr.rotKeys[ki].q = eulerZYXToQuat(e);
-              }
+            if (!tr || !lay || !edits.length) return;
+            setChannelValues(
+              tr,
+              edits.map((e) => ({
+                time: e.time,
+                group: e.group,
+                axis: e.axis as 0 | 1 | 2,
+                value: e.group === "pos" ? e.value / 100 : e.value / RAD2DEG,
+              })),
+            );
+            let dirty: TimeRange | null = null;
+            for (const t of new Set(edits.map((e) => e.time))) {
+              const d = dirtyRange(lay, tr, t);
+              dirty = dirty ? unionRange(dirty, d) : d;
             }
-            rebakeRig(dirtyRange(lay, tr, time)); // live — the graph redraws itself
+            if (dirty) rebakeRig(dirty); // live — the graph redraws itself
           },
           onValueEnd: () => updateRigEditor(),
           onSeek: (t) => {
             preview?.pause();
             preview?.seek(t);
           },
-          onBrush: (span, amount) => {
-            // One brush tick: low-amount smooth over the keys under the brush.
-            // The view refreshes from updateRigEditor (no drag flag is set), so
-            // the curve visibly relaxes while painting.
+          onBrush: (refs, amount) => {
+            // One brush tick: blend ONLY the channels under the brush circle
+            // toward their neighbors — per-channel, so brushing one axis's
+            // curve never drags the other axes (or hips pos) along. The view
+            // refreshes from updateRigEditor (no drag flag is set), so the
+            // curve visibly relaxes while painting.
             const c = curveTrackNow();
-            if (!c) return;
-            const ts = keyTimes(c.tr).filter((t) => t >= span.t0 && t <= span.t1);
-            if (!ts.length) return;
-            if (!smoothKeys(c.tr, span.t0, span.t1, amount)) return;
-            let dirty = dirtyRange(c.lay, c.tr, ts[0]);
-            for (const t of ts) dirty = unionRange(dirty, dirtyRange(c.lay, c.tr, t));
-            rebakeRig(dirty);
+            if (!c || !refs.length) return;
+            if (!blendKeysToward(c.tr, refs, amount)) return;
+            let dirty: TimeRange | null = null;
+            for (const t of new Set(refs.map((r) => r.time))) {
+              const d = dirtyRange(c.lay, c.tr, t);
+              dirty = dirty ? unionRange(dirty, d) : d;
+            }
+            if (dirty) rebakeRig(dirty);
             updateRigEditor();
           },
           onRetime: (moves) => {
@@ -3819,11 +3825,17 @@ function buildPanel(name: string, clip: WanimClip, converted: ConvertedClip) {
       let lastT = tr.start;
       preview.pause();
       preview.seek(tr.start);
+      // Record in REAL time regardless of the user's review playback rate —
+      // the dialog promises real time, and a 0.5x review rate would silently
+      // produce a half-speed video. Restored when recording ends.
+      const reviewRate = preview.getRate();
+      preview.setRate(1);
       rec.start(200);
       preview.play();
       const stopAll = () => {
         window.clearInterval(tick);
         preview?.pause();
+        preview?.setRate(reviewRate);
         if (hideAids) preview?.setCaptureHide(false);
         preview?.setFrameCallback(null);
         previewRecording = false;

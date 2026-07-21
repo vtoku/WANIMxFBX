@@ -429,6 +429,16 @@ function editChannels(
   return n;
 }
 
+/**
+ * Set explicit per-channel values in ONE batched pass (the curve drag path):
+ * pos in meters, rot axes in radians on the key's unwrapped euler triple.
+ * Batching multi-axis edits of one key through editChannels keeps the
+ * euler-safe single-conversion guarantee the per-call path can't give.
+ */
+export function setChannelValues(track: RigTrack, edits: Array<ChannelKeyRef & { value: number }>): number {
+  return editChannels(track, edits, (ref) => (ref as ChannelKeyRef & { value: number }).value);
+}
+
 /** Copy the previous (dir=-1) / next (dir=+1) key's value onto each selected channel. */
 export function matchKeys(track: RigTrack, sel: ChannelKeyRef[], dir: -1 | 1): number {
   return editChannels(track, sel, (ref, i, posSrc, eulSrc) => {

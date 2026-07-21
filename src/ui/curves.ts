@@ -96,15 +96,17 @@ export interface CurveContextInfo {
 export interface CurveCallbacks {
   /** Vertical drag started on a key (push undo history once). */
   onValueStart(): void;
-  /** Live value change (write key + fast rebake; do NOT rebuild the view). */
-  onValue(group: "pos" | "rot", axis: number, time: number, value: number): void;
+  /** Live value changes, ONE batch per pointer move (write keys + one fast
+   * rebake; do NOT rebuild the view). Values are display units (cm / deg). */
+  onValues(edits: Array<{ group: "pos" | "rot"; axis: number; time: number; value: number }>): void;
   /** Drag finished (refresh surrounding UI). */
   onValueEnd(): void;
   onSeek(t: number): void;
   /** Right-click: host shows its menu for the selection/cursor. */
   onContext(info: CurveContextInfo): void;
-  /** Brush tick: small-amount smooth over the keys in [t0,t1] (throttled). */
-  onBrush?(span: { t0: number; t1: number }, amount: number): void;
+  /** Brush tick (throttled): blend exactly these channels toward their
+   * neighbors — only the curves under the brush circle, no cross-axis bleed. */
+  onBrush?(keys: CurveKeyRef[], amount: number): void;
   /** Retime commit (one per drag): selected keys moved per unique time. */
   onRetime?(moves: Array<{ from: number; to: number }>): void;
 }
@@ -151,6 +153,7 @@ export class CurveView {
   private boxScale = false;
   private onKeyDown: (e: KeyboardEvent) => void;
   private onKeyUp: (e: KeyboardEvent) => void;
+  private onBlur: () => void;
   /** Selected keys as stable refs (model rebuilds swap the key objects). */
   private selected = new Set<string>();
   /** Marquee rectangle while band-selecting, in canvas coordinates. */
@@ -249,8 +252,16 @@ export class CurveView {
         this.syncToolUi();
       }
     };
+    // Focus loss eats the keyup — never leave the spring-retime stuck on.
+    this.onBlur = () => {
+      if (this.rHeld) {
+        this.rHeld = false;
+        this.syncToolUi();
+      }
+    };
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
+    window.addEventListener("blur", this.onBlur);
 
     this.canvas = document.createElement("canvas");
     this.canvas.style.width = "100%";
@@ -504,10 +515,11 @@ export class CurveView {
     this.cbs.onValueStart();
     const move = (ev: PointerEvent) => {
       if (!this.drag) return;
-      for (const t of this.drag.targets) {
-        t.key.value = t.startValue + (this.drag.startY - ev.clientY) * this.valuePerPx(t.ch.group);
-        this.cbs!.onValue(t.ch.group, t.ch.axis, t.key.time, t.key.value);
-      }
+      const edits = this.drag.targets.map((t) => {
+        t.key.value = t.startValue + (this.drag!.startY - ev.clientY) * this.valuePerPx(t.ch.group);
+        return { group: t.ch.group, axis: t.ch.axis, time: t.key.time, value: t.key.value };
+      });
+      this.cbs!.onValues(edits);
       this.draw();
     };
     const up = () => {
@@ -592,11 +604,12 @@ export class CurveView {
     const move = (ev: PointerEvent) => {
       const py = ev.clientY - r.top;
       const s = (py - pivotY) / (edgeY - pivotY || 1);
-      for (const t of targets) {
+      const edits = targets.map((t) => {
         const pivot = pivotVal[t.ch.group];
         t.key.value = pivot + (t.startValue - pivot) * s;
-        this.cbs!.onValue(t.ch.group, t.ch.axis, t.key.time, t.key.value);
-      }
+        return { group: t.ch.group, axis: t.ch.axis, time: t.key.time, value: t.key.value };
+      });
+      this.cbs!.onValues(edits);
       this.draw();
     };
     const up = () => {
@@ -706,22 +719,21 @@ export class CurveView {
     let started = false;
     const apply = () => {
       if (!this.brushPt || !this.model) return;
-      let t0 = Infinity, t1 = -Infinity;
+      // Exactly the channels whose drawn key sits inside the circle — the
+      // brush must not bleed onto axes it doesn't visibly touch.
+      const hits: CurveKeyRef[] = [];
       for (const ch of this.model.channels) {
         for (const key of ch.keys) {
           const d = Math.hypot(this.x(key.time) - this.brushPt.x, this.y(key.value, ch.group) - this.brushPt.y);
-          if (d <= BRUSH_R) {
-            if (key.time < t0) t0 = key.time;
-            if (key.time > t1) t1 = key.time;
-          }
+          if (d <= BRUSH_R) hits.push({ group: ch.group, axis: ch.axis, time: key.time });
         }
       }
-      if (t0 > t1) return;
+      if (!hits.length) return;
       if (!started) {
         started = true;
         this.cbs!.onValueStart(); // one undo entry per stroke
       }
-      this.cbs!.onBrush!({ t0: t0 - 1e-3, t1: t1 + 1e-3 }, 0.15);
+      this.cbs!.onBrush!(hits, 0.15);
     };
     this.brushStroke = { t0: 0, t1: 0 }; // marks "stroking" for the move handler
     apply();
@@ -750,7 +762,9 @@ export class CurveView {
     const valid = new Set<string>();
     for (const ch of model?.channels ?? []) for (const key of ch.keys) valid.add(this.refOf(ch, key));
     for (const ref of this.selected) if (!valid.has(ref)) this.selected.delete(ref);
-    this.fitScale();
+    // Keep the y-scale frozen while a brush stroke is live: refitting as
+    // values relax would slide the curves under the stationary brush circle.
+    if (!this.brushStroke) this.fitScale();
     this.draw();
   }
 
@@ -860,6 +874,7 @@ export class CurveView {
     this.ro.disconnect();
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
+    window.removeEventListener("blur", this.onBlur);
     this.el.remove();
   }
 
