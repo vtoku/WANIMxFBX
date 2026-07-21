@@ -121,9 +121,15 @@ panel (collapsible as today).
 One dialog (File → Export…, Ctrl+E) organized by TARGET, not by container —
 you pick where the file is going, and only that target's options show:
 
-- **FBX — Unity / Unreal / DCC** — the animation take: bone-name scheme
-  (HumanBodyBones vs HumanIK), rest pose, proportions, spine distribution,
-  face blendshapes, body mesh, reduction tolerances + the analyzer.
+- **FBX — Unity / Unreal** — the animation take with HumanBodyBones naming
+  (what name-keyed game-engine retargets expect): rest pose, proportions,
+  spine distribution, face blendshapes, body mesh, reduction tolerances +
+  the analyzer.
+- **FBX — HumanIK retarget** — the same take with HumanIK template naming
+  and the T-pose take front and center: the preset a mocap-DCC
+  characterization pipeline wants, zero renaming on import. (Presets are
+  DEFAULTS over one writer — any option can still be overridden inside the
+  preset.)
 - **FBX — Shogun target rig** — the mocap-solver flavor: fixes up the loaded
   VRM the way the sibling VRM→Shogun converter does, with its options in the
   dialog (T-pose/rest normalization, naming template, mesh strip/keep,
